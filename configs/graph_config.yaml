@@ -1,0 +1,9 @@
+graph:
+  method: knn
+  k: 10
+  radius: 8.0
+  weighted: true
+  self_loops: false
+edge_weight:
+  metric: euclidean
+  sigma: 1.0

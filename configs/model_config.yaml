@@ -1,0 +1,16 @@
+encoder:
+  num_aps: 521  # Must be > max AP ID (WAP001-WAP520 -> 1-520)
+  latent_dim: 64  # AP encoder output dimension
+  hidden_dim: 128
+  dropout: 0.2
+  activation: relu
+  
+gnn:
+  type: graphsage
+  arch: sage  # 'sage' or 'gat'
+  num_layers: 3
+  hidden_dim: 128
+  output_dim: 2
+  
+fusion:
+  enabled: false

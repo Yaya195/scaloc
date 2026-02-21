@@ -1,0 +1,16 @@
+dataset:
+  name: UJIIndoorLoc
+  train_csv: data/raw/trainingData.csv
+  test_csv: data/raw/validationData.csv
+  
+preprocess:
+  rssi_min: -110
+  rssi_max: 0
+  missing_value: 100
+  normalize: true
+  min_rssi_threshold: -95  # Filter APs with RSSI weaker than this
+  
+reference_points:
+  clustering: kmeans
+  n_clusters: 200
+  min_samples_per_rp: 5

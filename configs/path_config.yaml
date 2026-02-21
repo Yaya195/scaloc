@@ -1,0 +1,3 @@
+raw_data_dir: "data/raw"
+training_file: "trainingData.csv"
+validation_file: "validationData.csv"

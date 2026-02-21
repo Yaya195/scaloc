@@ -1,0 +1,65 @@
+# src/data/fl_query_dataset.py
+
+import torch
+from torch.utils.data import Dataset
+
+
+class FLQueryDataset(Dataset):
+    """
+    Dataset for one domain in FL:
+        - Holds the domain graph (PyG Data)
+        - Holds query fingerprints + true positions (normalized)
+    """
+
+    def __init__(self, graph_data, queries):
+        """
+        Args:
+            graph_data: PyG Data object for the domain (with coord_min, coord_max)
+            queries: list of dicts:
+                {
+                    "ap_ids": list[int],
+                    "rssi":   list[float],
+                    "pos":    (x, y)  # in original metric space
+                }
+        """
+        self.graph = graph_data
+        self.queries = queries
+        
+        # Extract normalization stats from graph
+        self.coord_min = graph_data.coord_min.numpy()
+        self.coord_max = graph_data.coord_max.numpy()
+        self.coord_range = self.coord_max - self.coord_min
+
+    def update_graph_features(self, encoder, device="cpu"):
+        """
+        Re-encode graph node features with updated encoder.
+        This is called after loading global parameters in FL.
+        """
+        encoder.eval()
+        node_feats = []
+        
+        with torch.no_grad():
+            for fp in self.graph.rp_fingerprints:
+                ap_ids = torch.tensor(fp["ap_ids"], dtype=torch.long).to(device)
+                rssi = torch.tensor(fp["rssi"], dtype=torch.float).unsqueeze(-1).to(device)
+                z = encoder(ap_ids, rssi)  # (latent_dim,)
+                node_feats.append(z.cpu().numpy())
+        
+        import numpy as np
+        x = np.stack(node_feats, axis=0)
+        self.graph.x = torch.tensor(x, dtype=torch.float)
+    
+    def __len__(self):
+        return len(self.queries)
+
+    def __getitem__(self, idx):
+        q = self.queries[idx]
+
+        ap_ids = torch.tensor(q["ap_ids"], dtype=torch.long)
+        rssi = torch.tensor(q["rssi"], dtype=torch.float).unsqueeze(-1)
+        
+        # Normalize query position using the same stats as RPs
+        pos_raw = torch.tensor(q["pos"], dtype=torch.float)
+        pos_normalized = (pos_raw - torch.from_numpy(self.coord_min).float()) / torch.from_numpy(self.coord_range).float()
+
+        return ap_ids, rssi, pos_normalized

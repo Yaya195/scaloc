@@ -1,0 +1,11 @@
+federated:
+  algorithm: fedavg
+  rounds: 50
+  local_epochs: 1
+  client_fraction: 1.0
+  min_clients: 2
+  seed: 42
+  
+  # Client sampling
+  num_clients_per_round: 3  # Number of clients to randomly sample per round (null = use all)
+  sampling_strategy: random  # 'random' or 'all'

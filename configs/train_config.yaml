@@ -1,0 +1,9 @@
+training:
+  batch_size: 128
+  learning_rate: 0.0005
+  weight_decay: 0.00001
+  epochs: 1
+  device: cpu
+logging:
+  print_every: 10
+  save_every: 5
