@@ -40,6 +40,16 @@ class APWiseEncoder(nn.Module):
             nn.Linear(latent_dim, latent_dim),
         )
         
+        # Attention pooling: learns a scalar score per AP embedding
+        # Score is computed from z_j (the modulated vector), not raw RSSI,
+        # so it captures both AP identity and signal strength jointly.
+        if pooling == "attention":
+            self.attention_scorer = nn.Sequential(
+                nn.Linear(latent_dim, latent_dim // 2),
+                nn.Tanh(),
+                nn.Linear(latent_dim // 2, 1),
+            )
+        
         # Initialize weights properly to avoid NaN
         self._init_weights()
     
@@ -74,7 +84,12 @@ class APWiseEncoder(nn.Module):
             z = z_j.mean(dim=0)
         elif self.pooling == "sum":
             z = z_j.sum(dim=0)
+        elif self.pooling == "attention":
+            # scores: (N, 1) -> softmax over visible APs
+            scores = self.attention_scorer(z_j)          # (N, 1)
+            weights = F.softmax(scores, dim=0)           # (N, 1) sums to 1
+            z = (weights * z_j).sum(dim=0)               # (latent_dim,)
         else:
-            raise ValueError(f"Unknown pooling: {self.pooling}")
+            raise ValueError(f"Unknown pooling: {self.pooling}. Choose from: mean, sum, attention")
 
         return z

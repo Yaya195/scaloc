@@ -32,8 +32,13 @@ class FLQueryDataset(Dataset):
 
     def update_graph_features(self, encoder, device="cpu"):
         """
-        Re-encode graph node features with updated encoder.
-        This is called after loading global parameters in FL.
+        Re-encode graph node features with the updated encoder (no gradients).
+        Used to keep graph.x in sync after FL aggregation for inference
+        and for `update_graph_features` calls in set_parameters.
+        
+        NOTE: During training, client.py re-encodes RP features WITH gradients
+        inline in each forward pass (see train_one_epoch). This method is only
+        used for inference / round-boundary bookkeeping.
         """
         encoder.eval()
         node_feats = []

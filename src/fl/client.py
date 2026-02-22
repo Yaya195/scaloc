@@ -36,13 +36,12 @@ class FLClient:
         self.encoder.load_state_dict(encoder_params)
         
         # Re-encode graph node features with updated encoder
-        # This is critical: without this, graph has stale embeddings from old encoder
+        # (no_grad — training re-encodes with gradients per batch in train_one_epoch)
         self.dataset.update_graph_features(self.encoder, self.device)
         
-        # Recreate optimizer to reset momentum/state when loading new global parameters
-        params_list = list(self.model.parameters()) + list(self.encoder.parameters())
-        lr = self.optimizer.param_groups[0]['lr']  # Preserve learning rate
-        self.optimizer = torch.optim.Adam(params_list, lr=lr)
+        # NOTE: optimizer state is intentionally preserved across rounds.
+        # Resetting it every round destroys Adam's momentum, preventing convergence
+        # with small local_epochs. Only model weights are synchronized in FedAvg.
 
     def train_one_epoch(self, batch_size=1):
         self.model.train()
@@ -50,7 +49,7 @@ class FLClient:
         # Use batch_size=1 because encoder expects single queries with variable-length AP sets
         loader = DataLoader(self.dataset, batch_size=1, shuffle=True)
 
-        # Get domain graph (same for all batches)
+        # Get domain graph structure (topology + raw fingerprints, same for all batches)
         graph = self.dataset.graph.to(self.device)
 
         total_loss = 0.0
@@ -65,6 +64,22 @@ class FLClient:
 
             self.optimizer.zero_grad()
 
+            # ----------------------------------------------------------------
+            # Re-encode RP node features WITH gradients so the encoder
+            # is jointly trained through both the RP path and the query path.
+            # spec §5.1: x_i = phi_enc(r_bar_i), z_q = phi_enc(r_q)
+            # Both must use the same encoder in the same forward pass.
+            # ----------------------------------------------------------------
+            rp_feats = []
+            for fp in graph.rp_fingerprints:
+                rp_ap_ids = torch.tensor(fp["ap_ids"], dtype=torch.long).to(self.device)
+                rp_rssi = torch.tensor(fp["rssi"], dtype=torch.float).unsqueeze(-1).to(self.device)
+                rp_feats.append(self.encoder(rp_ap_ids, rp_rssi))  # (latent_dim,)
+            
+            # Build a differentiable graph copy with live node features
+            graph_live = graph.clone()
+            graph_live.x = torch.stack(rp_feats, dim=0)  # (N, latent_dim) — has grad_fn
+
             z_q = self.encoder(ap_ids, rssi)  # (latent_dim,)
             
             # Check for NaN in encoder output
@@ -73,7 +88,7 @@ class FLClient:
                 print(f"    AP count: {len(ap_ids)}")
                 continue
             
-            p_hat, _ = self.model(graph, z_q)
+            p_hat, _ = self.model(graph_live, z_q)
             
             # Check for NaN in model output
             if torch.isnan(p_hat).any():

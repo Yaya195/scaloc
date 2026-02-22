@@ -1,6 +1,7 @@
 # run_fl_experiment.py
 
 import copy
+import json
 import pandas as pd
 from pathlib import Path
 import sys
@@ -16,54 +17,60 @@ from src.fl.client import FLClient
 from src.fl.run_federated_training import run_federated_training
 from src.data.rp_graph_builder import build_domain_graph
 from src.data.fl_query_dataset import FLQueryDataset
+from src.evaluation.tracker import ExperimentTracker
 
 RPS_DIR = Path("data/processed/rps")
 GRAPHS_DIR = Path("data/processed/graphs")
 SAMPLES_DIR = Path("data/processed/samples")
 
 
-def load_domains():
-    train_samples = pd.read_parquet(SAMPLES_DIR / "train_samples.parquet")
-
+def load_queries(samples_path, split_prefix="train"):
+    """Load and parse query data from a parquet samples file."""
+    samples = pd.read_parquet(samples_path)
+    
     domains = {}
-    for rp_path in sorted(RPS_DIR.glob("train_rps_*.parquet")):
-        domain_id = rp_path.stem.replace("train_rps_", "")
-        rp_table = pd.read_parquet(rp_path)
-
-        q_df = train_samples[train_samples["domain_id"] == domain_id]
+    for domain_id in samples["domain_id"].unique():
+        q_df = samples[samples["domain_id"] == domain_id]
         queries = []
         skipped = 0
         for _, row in q_df.iterrows():
             aps = row["aps"]
-            # Handle case where aps might be a string (JSON serialized)
             if isinstance(aps, str):
-                import json
                 aps = json.loads(aps)
             
-            # Skip queries with empty AP lists
             if len(aps) == 0:
                 skipped += 1
                 continue
             
             ap_ids = [a["ap_id"] for a in aps]
             rssi = [a["rssi"] for a in aps]
-            
-            # Extract numeric part from ap_id (e.g., 'WAP007' -> 7)
             ap_ids = [int(ap.replace('WAP', '')) if isinstance(ap, str) else ap for ap in ap_ids]
             
-            queries.append(
-                {
-                    "ap_ids": ap_ids,
-                    "rssi": rssi,
-                    "pos": (row["x"], row["y"]),
-                }
-            )
+            queries.append({
+                "ap_ids": ap_ids,
+                "rssi": rssi,
+                "pos": (row["x"], row["y"]),
+            })
         
         if skipped > 0:
-            print(f"  Domain {domain_id}: Skipped {skipped} queries with empty AP lists")
+            print(f"  Domain {domain_id}: Skipped {skipped} {split_prefix} queries with empty AP lists")
+        
+        domains[domain_id] = queries
+    
+    return domains
 
+
+def load_domains():
+    """Load training data: RP tables + query sets per domain."""
+    train_queries = load_queries(SAMPLES_DIR / "train_samples.parquet", "train")
+    
+    domains = {}
+    for rp_path in sorted(RPS_DIR.glob("train_rps_*.parquet")):
+        domain_id = rp_path.stem.replace("train_rps_", "")
+        rp_table = pd.read_parquet(rp_path)
+        queries = train_queries.get(domain_id, [])
         domains[domain_id] = (rp_table, queries)
-
+    
     return domains
 
 
@@ -76,6 +83,8 @@ def main():
     # Extract parameters from configs
     num_aps = model_cfg["encoder"]["num_aps"]
     latent_dim = model_cfg["encoder"]["latent_dim"]
+    ap_emb_dim = model_cfg["encoder"]["ap_emb_dim"]
+    pooling = model_cfg["encoder"]["pooling"]
     arch = model_cfg["gnn"]["arch"]
     
     rounds = fl_cfg["federated"]["rounds"]
@@ -86,27 +95,26 @@ def main():
     
     lr = train_cfg["training"]["learning_rate"]
     device = train_cfg["training"]["device"]
+    eval_every = train_cfg["logging"].get("eval_every", 5)
 
     # Create global model and encoder for the server
-    encoder_global = APWiseEncoder(num_aps=num_aps, latent_dim=latent_dim)
+    encoder_global = APWiseEncoder(num_aps=num_aps, latent_dim=latent_dim, ap_emb_dim=ap_emb_dim, pooling=pooling)
     model_global = FLIndoorModel(latent_dim=latent_dim, arch=arch)
 
     server = FLServer(global_model=model_global, global_encoder=encoder_global)
 
+    # ------- Load training data -------
     domains = load_domains()
     clients = []
     
-    # Build graphs using the global encoder (before creating client copies)
     graph_data_dict = {}
     for domain_id, (rp_table, queries) in domains.items():
         graph_data = build_domain_graph(domain_id, rp_table, encoder_global)
         graph_data_dict[domain_id] = (graph_data, queries)
     
-    # Create independent model copies for each client
     for domain_id, (graph_data, queries) in graph_data_dict.items():
         dataset = FLQueryDataset(graph_data, queries)
         
-        # Each client gets its own deep copy of model and encoder
         client_model = copy.deepcopy(model_global)
         client_encoder = copy.deepcopy(encoder_global)
 
@@ -118,12 +126,37 @@ def main():
             lr=lr,
             device=device,
         )
-        
-        # Re-encode graph with client's own encoder copy for consistency
         dataset.update_graph_features(client_encoder, device)
-        
         clients.append(client)
+    
+    # ------- Load validation data -------
+    val_datasets = {}
+    val_samples_path = SAMPLES_DIR / "val_samples.parquet"
+    if val_samples_path.exists():
+        val_queries = load_queries(val_samples_path, "val")
+        for domain_id, queries in val_queries.items():
+            if domain_id in graph_data_dict:
+                graph_data = graph_data_dict[domain_id][0]
+                val_datasets[domain_id] = FLQueryDataset(graph_data, queries)
+        print(f"Loaded validation data: {sum(len(d) for d in val_datasets.values())} samples across {len(val_datasets)} domains\n")
+    else:
+        print("No validation data found, skipping evaluation during training.\n")
+    
+    # ------- Setup tracker -------
+    experiment_config = {
+        "model": model_cfg,
+        "fl": fl_cfg,
+        "training": train_cfg,
+        "num_clients": len(clients),
+        "num_domains": len(domains),
+    }
+    tracker = ExperimentTracker(
+        experiment_name="fedgnn",
+        results_dir="results",
+        config=experiment_config,
+    )
 
+    # ------- Run FL training -------
     run_federated_training(
         server=server,
         clients=clients,
@@ -132,6 +165,10 @@ def main():
         num_clients_per_round=num_clients_per_round,
         sampling_strategy=sampling_strategy,
         seed=seed,
+        tracker=tracker,
+        val_datasets=val_datasets if val_datasets else None,
+        eval_every=eval_every,
+        device=device,
     )
 
 

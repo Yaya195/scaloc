@@ -7,3 +7,4 @@ training:
 logging:
   print_every: 10
   save_every: 5
+  eval_every: 5  # Evaluate on validation set every N rounds
