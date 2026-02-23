@@ -17,7 +17,9 @@ from src.fl.client import FLClient
 from src.fl.run_federated_training import run_federated_training
 from src.data.rp_graph_builder import build_domain_graph
 from src.data.fl_query_dataset import FLQueryDataset
+from src.data.normalization import fit_domain_normalization_stats
 from src.evaluation.tracker import ExperimentTracker
+from src.utils.device import resolve_device
 
 RPS_DIR = Path("data/processed/rps")
 GRAPHS_DIR = Path("data/processed/graphs")
@@ -94,7 +96,8 @@ def main():
     seed = fl_cfg["federated"]["seed"]
     
     lr = train_cfg["training"]["learning_rate"]
-    device = train_cfg["training"]["device"]
+    device = resolve_device(train_cfg["training"].get("device", "auto"))
+    print(f"[device] Using {device}")
     eval_every = train_cfg["logging"].get("eval_every", 5)
 
     # Create global model and encoder for the server
@@ -105,11 +108,19 @@ def main():
 
     # ------- Load training data -------
     domains = load_domains()
+    domain_norm_stats = fit_domain_normalization_stats(
+        {domain_id: queries for domain_id, (_, queries) in domains.items()}
+    )
     clients = []
     
     graph_data_dict = {}
     for domain_id, (rp_table, queries) in domains.items():
-        graph_data = build_domain_graph(domain_id, rp_table, encoder_global)
+        graph_data = build_domain_graph(
+            domain_id,
+            rp_table,
+            encoder_global,
+            norm_stats=domain_norm_stats.get(domain_id),
+        )
         graph_data_dict[domain_id] = (graph_data, queries)
     
     for domain_id, (graph_data, queries) in graph_data_dict.items():
@@ -147,6 +158,7 @@ def main():
         "model": model_cfg,
         "fl": fl_cfg,
         "training": train_cfg,
+        "effective_device": device,
         "num_clients": len(clients),
         "num_domains": len(domains),
     }
@@ -154,6 +166,7 @@ def main():
         experiment_name="fedgnn",
         results_dir="results",
         config=experiment_config,
+        tensorboard_log_dir="logs",
     )
 
     # ------- Run FL training -------

@@ -16,6 +16,8 @@ import pandas as pd
 
 from load_config import load_config
 from run_fl_experiment import load_queries
+from src.fl.utils import select_federated_client_ids
+from src.utils.device import resolve_device
 
 RPS_DIR = Path("data/processed/rps")
 SAMPLES_DIR = Path("data/processed/samples")
@@ -54,7 +56,7 @@ def run_knn(train_queries, val_queries, num_aps):
     )
 
 
-def run_centralized_mlp(train_queries, val_queries, num_aps, train_cfg):
+def run_centralized_mlp(train_queries, val_queries, num_aps, device, train_cfg):
     """Run Centralized MLP baseline."""
     print("\n" + "=" * 60)
     print("BASELINE: Centralized MLP")
@@ -66,11 +68,11 @@ def run_centralized_mlp(train_queries, val_queries, num_aps, train_cfg):
         num_aps=num_aps,
         epochs=50,
         lr=float(train_cfg["training"]["learning_rate"]),
-        device=train_cfg["training"]["device"],
+        device=device,
     )
 
 
-def run_federated_mlp(train_queries, val_queries, num_aps, fl_cfg, train_cfg):
+def run_federated_mlp(train_queries, val_queries, num_aps, fl_cfg, train_cfg, device):
     """Run Federated MLP baseline with same FL protocol as FedGNN."""
     print("\n" + "=" * 60)
     print("BASELINE: Federated MLP")
@@ -86,11 +88,11 @@ def run_federated_mlp(train_queries, val_queries, num_aps, fl_cfg, train_cfg):
         num_clients_per_round=fl_cfg["federated"].get("num_clients_per_round"),
         sampling_strategy=fl_cfg["federated"].get("sampling_strategy", "random"),
         seed=fl_cfg["federated"].get("seed", 42),
-        device=train_cfg["training"]["device"],
+        device=device,
     )
 
 
-def run_centralized_gnn(model_cfg, train_cfg):
+def run_centralized_gnn(model_cfg, train_cfg, device, allowed_domains):
     """Run Centralized GNN baseline."""
     print("\n" + "=" * 60)
     print("BASELINE: Centralized GNN")
@@ -104,7 +106,8 @@ def run_centralized_gnn(model_cfg, train_cfg):
         arch=model_cfg["gnn"]["arch"],
         epochs=50,
         lr=float(train_cfg["training"]["learning_rate"]),
-        device=train_cfg["training"]["device"],
+        device=device,
+        allowed_domains=allowed_domains,
     )
 
 
@@ -114,11 +117,33 @@ def main():
     model_cfg = load_config("model_config")
     fl_cfg = load_config("fl_config")
     train_cfg = load_config("train_config")
+    device = resolve_device(train_cfg["training"].get("device", "auto"))
+    print(f"[device] Using {device}")
 
     # num_aps for RSSI vector length: APs are 1-520, so vector length = 520
     # (model_config.num_aps=521 is embedding table size, not vector length)
     num_aps_vector = 520
     train_queries, val_queries = load_all_data()
+
+    common_domains = sorted(
+        d for d in train_queries.keys()
+        if train_queries.get(d) and val_queries.get(d)
+    )
+
+    selected_domains = select_federated_client_ids(
+        client_ids=common_domains,
+        num_clients_per_round=fl_cfg["federated"].get("num_clients_per_round"),
+        sampling_strategy=fl_cfg["federated"].get("sampling_strategy", "random"),
+        seed=fl_cfg["federated"].get("seed", 42),
+    )
+
+    train_queries = {d: train_queries[d] for d in selected_domains}
+    val_queries = {d: val_queries[d] for d in selected_domains}
+
+    print(
+        f"[fairness] Evaluating all baselines on the same {len(selected_domains)} "
+        f"FL-selected train+val domains: {selected_domains}"
+    )
 
     comparison = {}
 
@@ -128,24 +153,43 @@ def main():
     print(f"  k-NN global: {comparison['knn']}")
 
     # 2. Centralized MLP
-    cmlp_results = run_centralized_mlp(train_queries, val_queries, num_aps_vector, train_cfg)
+    cmlp_results = run_centralized_mlp(train_queries, val_queries, num_aps_vector, device, train_cfg)
     comparison["centralized_mlp"] = cmlp_results.get("global", {})
     print(f"  Centralized MLP global: {comparison['centralized_mlp']}")
 
     # 3. Federated MLP
-    fmlp_results = run_federated_mlp(train_queries, val_queries, num_aps_vector, fl_cfg, train_cfg)
+    fmlp_results = run_federated_mlp(train_queries, val_queries, num_aps_vector, fl_cfg, train_cfg, device)
     comparison["federated_mlp"] = fmlp_results.get("global", {})
     print(f"  Federated MLP global: {comparison['federated_mlp']}")
 
     # 4. Centralized GNN
-    cgnn_results = run_centralized_gnn(model_cfg, train_cfg)
+    cgnn_results = run_centralized_gnn(model_cfg, train_cfg, device, selected_domains)
     comparison["centralized_gnn"] = cgnn_results.get("global", {})
     print(f"  Centralized GNN global: {comparison['centralized_gnn']}")
 
     # Save comparison
     out_path = RESULTS_DIR / "baseline_comparison.json"
+    out_payload = {
+        "comparison": comparison,
+        "fairness": {
+            "evaluation_domains": selected_domains,
+            "num_domains": len(selected_domains),
+            "device": device,
+            "federated_protocol": {
+                "rounds": fl_cfg["federated"]["rounds"],
+                "local_epochs": fl_cfg["federated"]["local_epochs"],
+                "num_clients_per_round": fl_cfg["federated"].get("num_clients_per_round"),
+                "sampling_strategy": fl_cfg["federated"].get("sampling_strategy", "random"),
+                "seed": fl_cfg["federated"].get("seed", 42),
+            },
+            "domain_selection": {
+                "all_common_domains": common_domains,
+                "selected_domains": selected_domains,
+            },
+        },
+    }
     with open(out_path, "w") as f:
-        json.dump(comparison, f, indent=2, cls=NumpyEncoder)
+        json.dump(out_payload, f, indent=2, cls=NumpyEncoder)
     print(f"\nBaseline comparison saved to {out_path}")
 
     # Print summary table

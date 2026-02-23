@@ -14,11 +14,17 @@
 from pathlib import Path
 from typing import Dict, Any, Tuple
 import re
+import sys
 
 import numpy as np
 import pandas as pd
 
 from .load_raw import load_training_data, load_validation_data
+
+CONFIGS_DIR = Path(__file__).resolve().parents[2] / "configs"
+if str(CONFIGS_DIR) not in sys.path:
+    sys.path.insert(0, str(CONFIGS_DIR))
+from load_config import load_config
 
 INTERIM_DIR = Path("data/interim/clean")
 INTERIM_DIR.mkdir(parents=True, exist_ok=True)
@@ -77,7 +83,7 @@ def utm_to_local_xy(df: pd.DataFrame, refs: Dict[Tuple[int, int], Tuple[float, f
     return df
 
 
-def clean_rssi(df: pd.DataFrame, ap_cols: list[str], min_rssi: int = -95) -> pd.DataFrame:
+def clean_rssi(df: pd.DataFrame, ap_cols: list[str], min_rssi: int = -104) -> pd.DataFrame:
     """Clean RSSI values: replace 100 with NA, drop very weak signals."""
     df = df.copy()
     for col in ap_cols:
@@ -105,11 +111,16 @@ def row_to_apwise_set(row: pd.Series, ap_cols: list[str]) -> Dict[str, Any]:
     }
 
 
-def process_split(df: pd.DataFrame, split_name: str, refs: Dict[Tuple[int, int], Tuple[float, float]]) -> None:
+def process_split(
+    df: pd.DataFrame,
+    split_name: str,
+    refs: Dict[Tuple[int, int], Tuple[float, float]],
+    min_rssi_threshold: int,
+) -> None:
     """Apply coordinate transform + RSSI cleaning + AP-wise conversion to a split."""
     ap_cols = get_ap_cols(df)
     df = utm_to_local_xy(df, refs)
-    df = clean_rssi(df, ap_cols=ap_cols)
+    df = clean_rssi(df, ap_cols=ap_cols, min_rssi=min_rssi_threshold)
 
     records = [row_to_apwise_set(row, ap_cols=ap_cols) for _, row in df.iterrows()]
     
@@ -130,10 +141,13 @@ def main():
     train_raw = load_training_data()
     val_raw = load_validation_data()
 
+    data_cfg = load_config("data_config")
+    min_rssi_threshold = data_cfg.get("preprocess", {}).get("min_rssi_threshold", -104)
+
     refs = compute_domain_refs(train_raw)
 
-    process_split(train_raw, "train", refs)
-    process_split(val_raw, "val", refs)
+    process_split(train_raw, "train", refs, min_rssi_threshold)
+    process_split(val_raw, "val", refs, min_rssi_threshold)
 
 
 if __name__ == "__main__":

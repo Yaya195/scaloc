@@ -1,11 +1,11 @@
 # src/fl/run_federated_training.py
 
-import random
 import time
 from typing import Dict, Optional
 
 from src.evaluation.tracker import ExperimentTracker
 from src.evaluation.inference import evaluate_fl_model
+from src.fl.utils import select_federated_client_ids
 
 
 def run_federated_training(
@@ -37,17 +37,30 @@ def run_federated_training(
         eval_every: Evaluate every N rounds (0 = no eval during training)
         device: device string
     """
-    if seed is not None:
-        random.seed(seed)
-    
-    # Client sampling: done ONCE at the start of the experiment
+    all_client_ids = [c.client_id for c in clients]
+    selected_ids = select_federated_client_ids(
+        client_ids=all_client_ids,
+        num_clients_per_round=num_clients_per_round,
+        sampling_strategy=sampling_strategy,
+        seed=seed,
+    )
+    client_map = {c.client_id: c for c in clients}
+    selected_clients = [client_map[cid] for cid in selected_ids]
+    eval_datasets_selected = None
+    if val_datasets is not None:
+        eval_datasets_selected = {
+            domain_id: dataset
+            for domain_id, dataset in val_datasets.items()
+            if domain_id in selected_ids
+        }
+
     if sampling_strategy == "random" and num_clients_per_round is not None:
-        selected_clients = random.sample(clients, min(num_clients_per_round, len(clients)))
-        print(f"Selected {len(selected_clients)}/{len(clients)} clients for this experiment: "
-              f"{[c.client_id for c in selected_clients]}")
+        print(
+            f"Selected {len(selected_clients)}/{len(clients)} clients for this experiment: "
+            f"{selected_ids}"
+        )
     else:
-        selected_clients = clients
-        print(f"Training with all {len(clients)} clients")
+        print(f"Training with all {len(selected_clients)} clients")
     
     print()
     
@@ -77,9 +90,9 @@ def run_federated_training(
         
         # Periodic evaluation
         eval_metrics = None
-        if val_datasets and eval_every > 0 and ((r + 1) % eval_every == 0 or r == 0 or r == rounds - 1):
+        if eval_datasets_selected and eval_every > 0 and ((r + 1) % eval_every == 0 or r == 0 or r == rounds - 1):
             print(f"  Evaluating global model...")
-            eval_results = evaluate_fl_model(server, val_datasets, device=device)
+            eval_results = evaluate_fl_model(server, eval_datasets_selected, device=device)
             eval_metrics = eval_results.get("global", {})
             if eval_metrics:
                 print(f"  Eval: mean_err={eval_metrics['mean_error']:.2f}m  "

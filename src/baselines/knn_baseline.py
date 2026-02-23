@@ -8,6 +8,12 @@ import numpy as np
 from sklearn.neighbors import KNeighborsRegressor
 from typing import Dict, List, Tuple
 
+from src.data.normalization import (
+    denormalize_coords,
+    fit_domain_normalization_stats,
+    normalize_coords,
+    normalize_rssi_matrix,
+)
 from src.evaluation.metrics import compute_all_metrics
 
 
@@ -46,6 +52,7 @@ def run_knn_baseline(
     all_preds = []
     all_truths = []
     results = {}
+    domain_stats = fit_domain_normalization_stats(train_queries)
 
     for domain_id, val_qs in val_queries.items():
         train_qs = train_queries.get(domain_id, [])
@@ -54,21 +61,31 @@ def run_knn_baseline(
 
         # Build RSSI matrices
         X_train = np.array([build_rssi_vector_from_query(q, num_aps) for q in train_qs])
-        y_train = np.array([q["pos"] for q in train_qs])
+        y_train_raw = np.array([q["pos"] for q in train_qs], dtype=np.float32)
         X_val = np.array([build_rssi_vector_from_query(q, num_aps) for q in val_qs])
-        y_val = np.array([q["pos"] for q in val_qs])
+        y_val_raw = np.array([q["pos"] for q in val_qs], dtype=np.float32)
+
+        stats = domain_stats.get(domain_id)
+        if stats is not None:
+            X_train = normalize_rssi_matrix(X_train, stats["rssi_min"], stats["rssi_max"])
+            X_val = normalize_rssi_matrix(X_val, stats["rssi_min"], stats["rssi_max"])
+            y_train = normalize_coords(y_train_raw, stats["coord_min"], stats["coord_max"])
+        else:
+            y_train = y_train_raw
 
         # Fit k-NN
         weights = "distance" if weighted else "uniform"
         knn = KNeighborsRegressor(n_neighbors=min(k, len(X_train)), weights=weights)
         knn.fit(X_train, y_train)
         y_pred = knn.predict(X_val)
+        if stats is not None:
+            y_pred = denormalize_coords(y_pred, stats["coord_min"], stats["coord_max"])
 
-        metrics = compute_all_metrics(y_pred, y_val)
+        metrics = compute_all_metrics(y_pred, y_val_raw)
         results[domain_id] = metrics
 
         all_preds.append(y_pred)
-        all_truths.append(y_val)
+        all_truths.append(y_val_raw)
 
     if all_preds:
         results["global"] = compute_all_metrics(

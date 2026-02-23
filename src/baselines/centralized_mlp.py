@@ -11,8 +11,15 @@ from torch.utils.data import TensorDataset, DataLoader
 from typing import Dict, List
 
 from src.baselines.knn_baseline import build_rssi_vector_from_query
+from src.data.normalization import (
+    denormalize_coords,
+    fit_global_normalization_stats,
+    normalize_coords,
+    normalize_rssi_matrix,
+)
 from src.evaluation.metrics import compute_all_metrics
 from src.evaluation.tracker import ExperimentTracker
+from src.utils.device import resolve_device
 
 
 class LocalizationMLP(nn.Module):
@@ -35,14 +42,23 @@ class LocalizationMLP(nn.Module):
         return self.net(x)
 
 
-def prepare_data(queries: List[dict], num_aps: int = 520):
-    """Convert list of query dicts to (X, y) tensors."""
-    X = np.array([build_rssi_vector_from_query(q, num_aps) for q in queries])
-    y = np.array([q["pos"] for q in queries])
-    
-    # Normalize RSSI: shift to [0, 1] range
-    X = (X + 110.0) / 110.0
-    
+def prepare_data(
+    queries: List[dict],
+    num_aps: int = 520,
+    rssi_min: float = None,
+    rssi_max: float = None,
+    coord_min: np.ndarray = None,
+    coord_max: np.ndarray = None,
+):
+    """Convert list of query dicts to (X, y) tensors, with optional normalization."""
+    X = np.array([build_rssi_vector_from_query(q, num_aps) for q in queries], dtype=np.float32)
+    y = np.array([q["pos"] for q in queries], dtype=np.float32)
+
+    if rssi_min is not None and rssi_max is not None:
+        X = normalize_rssi_matrix(X, rssi_min, rssi_max)
+    if coord_min is not None and coord_max is not None:
+        y = normalize_coords(y, coord_min, coord_max)
+
     return torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
 
 
@@ -55,7 +71,7 @@ def run_centralized_mlp(
     epochs: int = 50,
     lr: float = 1e-3,
     batch_size: int = 64,
-    device: str = "cpu",
+    device: str = "auto",
     experiment_name: str = "centralized_mlp",
 ) -> Dict[str, dict]:
     """
@@ -64,20 +80,50 @@ def run_centralized_mlp(
     Returns:
         {domain_id: metrics_dict, "global": metrics_dict}
     """
-    # Pool all training data
-    all_train = []
-    for queries in train_queries.values():
-        all_train.extend(queries)
-    
-    all_val = []
-    for queries in val_queries.values():
-        all_val.extend(queries)
+    device = resolve_device(device)
 
-    X_train, y_train = prepare_data(all_train, num_aps)
-    X_val, y_val = prepare_data(all_val, num_aps)
+    global_stats = fit_global_normalization_stats(train_queries)
+
+    # Build pooled training data from per-domain normalized tensors
+    train_x_parts = []
+    train_y_parts = []
+    val_domain_tensors = {}
+
+    for domain_id, queries in train_queries.items():
+        if not queries:
+            continue
+        X_d, y_d = prepare_data(
+            queries,
+            num_aps=num_aps,
+            rssi_min=global_stats["rssi_min"],
+            rssi_max=global_stats["rssi_max"],
+            coord_min=global_stats["coord_min"],
+            coord_max=global_stats["coord_max"],
+        )
+        train_x_parts.append(X_d)
+        train_y_parts.append(y_d)
+
+    for domain_id, queries in val_queries.items():
+        if not queries:
+            continue
+        X_v, y_v_norm = prepare_data(
+            queries,
+            num_aps=num_aps,
+            rssi_min=global_stats["rssi_min"],
+            rssi_max=global_stats["rssi_max"],
+            coord_min=global_stats["coord_min"],
+            coord_max=global_stats["coord_max"],
+        )
+        y_v_raw = np.array([q["pos"] for q in queries], dtype=np.float32)
+        val_domain_tensors[domain_id] = (X_v, y_v_norm, y_v_raw)
+
+    if not train_x_parts:
+        return {}
+
+    X_train = torch.cat(train_x_parts, dim=0)
+    y_train = torch.cat(train_y_parts, dim=0)
     
     X_train, y_train = X_train.to(device), y_train.to(device)
-    X_val, y_val = X_val.to(device), y_val.to(device)
 
     model = LocalizationMLP(input_dim=num_aps, hidden_dim=hidden_dim, num_layers=num_layers).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -87,7 +133,11 @@ def run_centralized_mlp(
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     
     # Tracker
-    tracker = ExperimentTracker(experiment_name, config={"type": "centralized_mlp", "epochs": epochs})
+    tracker = ExperimentTracker(
+        experiment_name,
+        config={"type": "centralized_mlp", "epochs": epochs},
+        tensorboard_log_dir="logs",
+    )
 
     # Training loop
     for epoch in range(epochs):
@@ -108,12 +158,26 @@ def run_centralized_mlp(
         eval_metrics = None
         if (epoch + 1) % 10 == 0 or epoch == 0 or epoch == epochs - 1:
             model.eval()
+            all_preds = []
+            all_truths = []
             with torch.no_grad():
-                pred_val = model(X_val).cpu().numpy()
-            eval_metrics = compute_all_metrics(pred_val, y_val.cpu().numpy())
-            print(f"  Epoch {epoch+1}/{epochs}: loss={avg_loss:.4f}  "
-                  f"mean_err={eval_metrics['mean_error']:.2f}m  "
-                  f"median={eval_metrics['median_error']:.2f}m")
+                for domain_id, (X_v, _y_v_norm, y_v_raw) in val_domain_tensors.items():
+                    pred_norm = model(X_v.to(device)).cpu().numpy()
+                    pred_raw = denormalize_coords(
+                        pred_norm,
+                        global_stats["coord_min"],
+                        global_stats["coord_max"],
+                    )
+                    all_preds.append(pred_raw)
+                    all_truths.append(y_v_raw)
+            if all_preds:
+                eval_metrics = compute_all_metrics(
+                    np.concatenate(all_preds), np.concatenate(all_truths)
+                )
+            if eval_metrics is not None:
+                print(f"  Epoch {epoch+1}/{epochs}: loss={avg_loss:.4f}  "
+                      f"mean_err={eval_metrics['mean_error']:.2f}m  "
+                      f"median={eval_metrics['median_error']:.2f}m")
         
         tracker.log_round(epoch + 1, {"centralized": avg_loss}, eval_metrics)
     
@@ -128,11 +192,23 @@ def run_centralized_mlp(
     for domain_id, queries in val_queries.items():
         if not queries:
             continue
-        X_d, y_d = prepare_data(queries, num_aps)
+        X_d, _y_norm = prepare_data(
+            queries,
+            num_aps=num_aps,
+            rssi_min=global_stats["rssi_min"],
+            rssi_max=global_stats["rssi_max"],
+            coord_min=global_stats["coord_min"],
+            coord_max=global_stats["coord_max"],
+        )
         X_d = X_d.to(device)
         with torch.no_grad():
-            pred = model(X_d).cpu().numpy()
-        y_d_np = y_d.numpy()
+            pred_norm = model(X_d).cpu().numpy()
+        pred = denormalize_coords(
+            pred_norm,
+            global_stats["coord_min"],
+            global_stats["coord_max"],
+        )
+        y_d_np = np.array([q["pos"] for q in queries], dtype=np.float32)
 
         metrics = compute_all_metrics(pred, y_d_np)
         results[domain_id] = metrics

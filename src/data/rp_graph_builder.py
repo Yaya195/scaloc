@@ -14,6 +14,7 @@ import torch
 from torch_geometric.data import Data
 
 from src.models.ap_wise_encoder import APWiseEncoder
+from src.data.normalization import normalize_coords, normalize_rssi_values
 
 
 def build_domain_graph(
@@ -21,6 +22,7 @@ def build_domain_graph(
     rp_table: pd.DataFrame,
     encoder: APWiseEncoder,
     k: int = 5,
+    norm_stats: dict = None,
 ) -> Data:
     """
     Build a single domain graph G_k.
@@ -54,14 +56,26 @@ def build_domain_graph(
             "rssi": row["rssi"]
         })
     
-    # Compute normalization stats (min-max per dimension)
-    coord_min = coords.min(axis=0)
-    coord_max = coords.max(axis=0)
-    coord_range = coord_max - coord_min
-    coord_range = np.maximum(coord_range, 1e-6)  # Avoid division by zero
-    
-    # Normalize coordinates to [0, 1]
-    coords_normalized = (coords - coord_min) / coord_range
+    # Compute / use provided normalization stats
+    if norm_stats is not None:
+        coord_min = np.asarray(norm_stats["coord_min"], dtype=np.float32)
+        coord_max = np.asarray(norm_stats["coord_max"], dtype=np.float32)
+        rssi_min = float(norm_stats["rssi_min"])
+        rssi_max = float(norm_stats["rssi_max"])
+    else:
+        coord_min = coords.min(axis=0).astype(np.float32)
+        coord_max = coords.max(axis=0).astype(np.float32)
+        all_rssi = [float(v) for fp in rp_fingerprints for v in fp["rssi"]]
+        rssi_min = float(min(all_rssi)) if all_rssi else -110.0
+        rssi_max = float(max(all_rssi)) if all_rssi else -30.0
+        if abs(rssi_max - rssi_min) < 1e-6:
+            rssi_max = rssi_min + 1.0
+
+    coords_normalized = normalize_coords(coords, coord_min, coord_max)
+
+    # Normalize RP RSSI values in-place using train-fitted domain stats
+    for fp in rp_fingerprints:
+        fp["rssi"] = normalize_rssi_values(fp["rssi"], rssi_min, rssi_max).tolist()
 
     # Encode each RP fingerprint with current encoder
     node_feats = []
@@ -99,6 +113,8 @@ def build_domain_graph(
         rp_ids=rp_ids,
         coord_min=torch.tensor(coord_min, dtype=torch.float),
         coord_max=torch.tensor(coord_max, dtype=torch.float),
+        rssi_min=torch.tensor(rssi_min, dtype=torch.float),
+        rssi_max=torch.tensor(rssi_max, dtype=torch.float),
         rp_fingerprints=rp_fingerprints,  # Store raw data for re-encoding
     )
 

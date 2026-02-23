@@ -29,7 +29,9 @@ from src.fl.client import FLClient
 from src.fl.run_federated_training import run_federated_training
 from src.data.rp_graph_builder import build_domain_graph
 from src.data.fl_query_dataset import FLQueryDataset
+from src.data.normalization import fit_domain_normalization_stats
 from src.evaluation.tracker import ExperimentTracker
+from src.utils.device import resolve_device
 from run_fl_experiment import load_queries, load_domains
 
 RPS_DIR = Path("data/processed/rps")
@@ -43,6 +45,7 @@ def build_experiment(
     model_cfg: dict,
     fl_cfg: dict,
     train_cfg: dict,
+    device: str,
     max_rps_per_domain: int = None,
     max_queries_per_domain: int = None,
 ):
@@ -53,7 +56,6 @@ def build_experiment(
     pooling = model_cfg["encoder"]["pooling"]
     arch = model_cfg["gnn"]["arch"]
     lr = train_cfg["training"]["learning_rate"]
-    device = train_cfg["training"]["device"]
 
     encoder = APWiseEncoder(num_aps=num_aps, latent_dim=latent_dim,
                             ap_emb_dim=ap_emb_dim, pooling=pooling)
@@ -62,6 +64,9 @@ def build_experiment(
 
     clients = []
     graph_data_dict = {}
+    domain_norm_stats = fit_domain_normalization_stats(
+        {domain_id: queries for domain_id, (_rp, queries) in domains_subset.items()}
+    )
 
     for domain_id, (rp_table, queries) in domains_subset.items():
         # Optionally limit RPs
@@ -75,7 +80,12 @@ def build_experiment(
         if not queries:
             continue
 
-        graph_data = build_domain_graph(domain_id, rp_table, encoder)
+        graph_data = build_domain_graph(
+            domain_id,
+            rp_table,
+            encoder,
+            norm_stats=domain_norm_stats.get(domain_id),
+        )
         graph_data_dict[domain_id] = graph_data
 
         dataset = FLQueryDataset(graph_data, queries)
@@ -109,6 +119,7 @@ def run_one_experiment(
     val_datasets,
     fl_cfg,
     train_cfg,
+    device,
     rounds_override=None,
 ):
     """Run a single FL experiment and return results dict."""
@@ -118,12 +129,11 @@ def run_one_experiment(
         fl_cfg["federated"]["num_clients_per_round"], len(clients)
     )
     seed = fl_cfg["federated"]["seed"]
-    device = train_cfg["training"]["device"]
     eval_every = train_cfg["logging"].get("eval_every", 5)
 
     tracker = ExperimentTracker(name, results_dir=str(RESULTS_DIR), config={
         "type": "scalability", "num_clients": len(clients),
-    })
+    }, tensorboard_log_dir="logs")
 
     t_start = time.time()
     run_federated_training(
@@ -149,7 +159,7 @@ def run_one_experiment(
     }
 
 
-def vary_num_domains(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg):
+def vary_num_domains(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device):
     """Experiment 1: vary number of client domains K."""
     domain_ids = sorted(all_domains.keys())
     results = []
@@ -158,62 +168,62 @@ def vary_num_domains(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg)
         subset = {d: all_domains[d] for d in domain_ids[:k]}
         print(f"\n=== Domains K={k} ===")
         server, clients, val_ds = build_experiment(
-            subset, val_queries_all, model_cfg, fl_cfg, train_cfg
+            subset, val_queries_all, model_cfg, fl_cfg, train_cfg, device
         )
         r = run_one_experiment(
-            f"scale_domains_{k}", server, clients, val_ds, fl_cfg, train_cfg
+            f"scale_domains_{k}", server, clients, val_ds, fl_cfg, train_cfg, device
         )
         r["K"] = k
         results.append(r)
     return results
 
 
-def vary_graph_size(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg):
+def vary_graph_size(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device):
     """Experiment 2: vary max RPs per domain."""
     results = []
     for max_rps in [10, 25, 50, 100, None]:
         label = max_rps if max_rps else "all"
         print(f"\n=== Max RPs per domain: {label} ===")
         server, clients, val_ds = build_experiment(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg,
+            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device,
             max_rps_per_domain=max_rps,
         )
         r = run_one_experiment(
-            f"scale_rps_{label}", server, clients, val_ds, fl_cfg, train_cfg
+            f"scale_rps_{label}", server, clients, val_ds, fl_cfg, train_cfg, device
         )
         r["max_rps"] = label
         results.append(r)
     return results
 
 
-def vary_data_volume(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg):
+def vary_data_volume(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device):
     """Experiment 3: vary samples per domain."""
     results = []
     for max_q in [25, 50, 100, 250, 500, None]:
         label = max_q if max_q else "all"
         print(f"\n=== Max queries per domain: {label} ===")
         server, clients, val_ds = build_experiment(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg,
+            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device,
             max_queries_per_domain=max_q,
         )
         r = run_one_experiment(
-            f"scale_queries_{label}", server, clients, val_ds, fl_cfg, train_cfg
+            f"scale_queries_{label}", server, clients, val_ds, fl_cfg, train_cfg, device
         )
         r["max_queries"] = label
         results.append(r)
     return results
 
 
-def vary_rounds(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg):
+def vary_rounds(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device):
     """Experiment 4: convergence analysis — vary number of FL rounds."""
     results = []
     for rounds in [10, 25, 50, 100]:
         print(f"\n=== Rounds: {rounds} ===")
         server, clients, val_ds = build_experiment(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg
+            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device
         )
         r = run_one_experiment(
-            f"scale_rounds_{rounds}", server, clients, val_ds, fl_cfg, train_cfg,
+            f"scale_rounds_{rounds}", server, clients, val_ds, fl_cfg, train_cfg, device,
             rounds_override=rounds,
         )
         r["rounds"] = rounds
@@ -236,6 +246,8 @@ def main():
     model_cfg = load_config("model_config")
     fl_cfg = load_config("fl_config")
     train_cfg = load_config("train_config")
+    device = resolve_device(train_cfg["training"].get("device", "auto"))
+    print(f"[device] Using {device}")
 
     # Load all domains
     all_domains = load_domains()
@@ -252,7 +264,7 @@ def main():
         print("SCALABILITY: Varying number of domains (K)")
         print("=" * 60)
         all_results["domains"] = vary_num_domains(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg
+            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device
         )
 
     if "rps" in experiments:
@@ -260,7 +272,7 @@ def main():
         print("SCALABILITY: Varying graph size (max RPs)")
         print("=" * 60)
         all_results["rps"] = vary_graph_size(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg
+            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device
         )
 
     if "queries" in experiments:
@@ -268,7 +280,7 @@ def main():
         print("SCALABILITY: Varying data volume (queries per domain)")
         print("=" * 60)
         all_results["queries"] = vary_data_volume(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg
+            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device
         )
 
     if "rounds" in experiments:
@@ -276,7 +288,7 @@ def main():
         print("SCALABILITY: Convergence analysis (rounds)")
         print("=" * 60)
         all_results["rounds"] = vary_rounds(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg
+            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device
         )
 
     # Save summary

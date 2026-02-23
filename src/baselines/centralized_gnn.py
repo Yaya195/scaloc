@@ -17,8 +17,10 @@ from src.models.ap_wise_encoder import APWiseEncoder
 from src.models.fl_indoor_model import FLIndoorModel
 from src.data.rp_graph_builder import build_domain_graph
 from src.data.fl_query_dataset import FLQueryDataset
+from src.data.normalization import fit_global_normalization_stats
 from src.evaluation.metrics import compute_all_metrics
 from src.evaluation.tracker import ExperimentTracker
+from src.utils.device import resolve_device
 
 
 def run_centralized_gnn(
@@ -33,8 +35,9 @@ def run_centralized_gnn(
     gnn_layers: int = 3,
     epochs: int = 50,
     lr: float = 5e-4,
-    device: str = "cpu",
+    device: str = "auto",
     eval_every: int = 5,
+    allowed_domains=None,
     experiment_name: str = "centralized_gnn",
 ) -> dict:
     """
@@ -46,8 +49,10 @@ def run_centralized_gnn(
     Returns:
         {domain_id: metrics_dict, "global": metrics_dict}
     """
+    device = resolve_device(device)
     rps_dir = Path(rps_dir)
     samples_dir = Path(samples_dir)
+    allowed_set = set(allowed_domains) if allowed_domains is not None else None
 
     # --- Create model + encoder ---
     encoder = APWiseEncoder(
@@ -69,15 +74,30 @@ def run_centralized_gnn(
     from run_fl_experiment import load_queries
 
     train_queries_all = load_queries(samples_dir / "train_samples.parquet", "train")
+    if allowed_set is not None:
+        selected_train_queries = {
+            d: q for d, q in train_queries_all.items()
+            if d in allowed_set and q
+        }
+    else:
+        selected_train_queries = {d: q for d, q in train_queries_all.items() if q}
+    global_norm_stats = fit_global_normalization_stats(selected_train_queries)
 
     train_datasets = {}
     for rp_path in sorted(rps_dir.glob("train_rps_*.parquet")):
         domain_id = rp_path.stem.replace("train_rps_", "")
+        if allowed_set is not None and domain_id not in allowed_set:
+            continue
         rp_table = pd.read_parquet(rp_path)
         queries = train_queries_all.get(domain_id, [])
         if not queries:
             continue
-        graph = build_domain_graph(domain_id, rp_table, encoder)
+        graph = build_domain_graph(
+            domain_id,
+            rp_table,
+            encoder,
+            norm_stats=global_norm_stats,
+        )
         dataset = FLQueryDataset(graph, queries)
         dataset.update_graph_features(encoder, device)
         train_datasets[domain_id] = dataset
@@ -88,6 +108,8 @@ def run_centralized_gnn(
     if val_path.exists():
         val_queries_all = load_queries(val_path, "val")
         for domain_id, queries in val_queries_all.items():
+            if allowed_set is not None and domain_id not in allowed_set:
+                continue
             if domain_id in train_datasets:
                 graph = train_datasets[domain_id].graph
                 val_datasets[domain_id] = FLQueryDataset(graph, queries)
@@ -102,10 +124,17 @@ def run_centralized_gnn(
         for idx in range(len(ds)):
             train_items.append((domain_id, idx))
 
-    tracker = ExperimentTracker(experiment_name, config={
-        "type": "centralized_gnn", "epochs": epochs, "arch": arch,
-        "latent_dim": latent_dim, "hidden_dim": hidden_dim,
-    })
+    tracker = ExperimentTracker(
+        experiment_name,
+        config={
+            "type": "centralized_gnn",
+            "epochs": epochs,
+            "arch": arch,
+            "latent_dim": latent_dim,
+            "hidden_dim": hidden_dim,
+        },
+        tensorboard_log_dir="logs",
+    )
 
     # --- Training loop ---
     for epoch in range(epochs):

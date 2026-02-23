@@ -12,8 +12,14 @@ from torch.utils.data import TensorDataset, DataLoader
 from typing import Dict, List
 
 from src.baselines.centralized_mlp import LocalizationMLP, prepare_data
+from src.data.normalization import (
+    denormalize_coords,
+    fit_domain_normalization_stats,
+)
 from src.evaluation.metrics import compute_all_metrics
 from src.evaluation.tracker import ExperimentTracker
+from src.fl.utils import select_federated_client_ids
+from src.utils.device import resolve_device
 
 
 def run_federated_mlp(
@@ -29,7 +35,7 @@ def run_federated_mlp(
     num_clients_per_round: int = None,
     sampling_strategy: str = "random",
     seed: int = 42,
-    device: str = "cpu",
+    device: str = "auto",
     experiment_name: str = "federated_mlp",
 ) -> Dict[str, dict]:
     """
@@ -40,36 +46,59 @@ def run_federated_mlp(
     Returns:
         {domain_id: metrics_dict, "global": metrics_dict}
     """
+    device = resolve_device(device)
     global_model = LocalizationMLP(input_dim=num_aps, hidden_dim=hidden_dim, num_layers=num_layers).to(device)
     criterion = nn.MSELoss()
+    domain_stats = fit_domain_normalization_stats(train_queries)
 
     # Prepare per-domain data
     domain_data = {}
     for domain_id, queries in train_queries.items():
-        if not queries:
+        if not queries or domain_id not in domain_stats:
             continue
-        X, y = prepare_data(queries, num_aps)
+        stats = domain_stats[domain_id]
+        X, y = prepare_data(
+            queries,
+            num_aps=num_aps,
+            rssi_min=stats["rssi_min"],
+            rssi_max=stats["rssi_max"],
+            coord_min=stats["coord_min"],
+            coord_max=stats["coord_max"],
+        )
         domain_data[domain_id] = (X.to(device), y.to(device))
 
     # Prepare validation
     val_data = {}
     for domain_id, queries in val_queries.items():
-        if queries:
-            X, y = prepare_data(queries, num_aps)
-            val_data[domain_id] = (X.to(device), y.to(device))
+        if queries and domain_id in domain_stats:
+            stats = domain_stats[domain_id]
+            X, y_norm = prepare_data(
+                queries,
+                num_aps=num_aps,
+                rssi_min=stats["rssi_min"],
+                rssi_max=stats["rssi_max"],
+                coord_min=stats["coord_min"],
+                coord_max=stats["coord_max"],
+            )
+            y_raw = np.array([q["pos"] for q in queries], dtype=np.float32)
+            val_data[domain_id] = (X.to(device), y_norm.to(device), y_raw)
     
     tracker = ExperimentTracker(experiment_name, config={
         "type": "federated_mlp", "rounds": rounds, "local_epochs": local_epochs
-    })
+    }, tensorboard_log_dir="logs")
 
     # Client sampling: select ONCE per experiment (same as FedGNN)
     all_domain_ids = sorted(domain_data.keys())
-    if num_clients_per_round and num_clients_per_round < len(all_domain_ids):
-        rng = np.random.RandomState(seed)
-        selected_ids = sorted(rng.choice(all_domain_ids, size=num_clients_per_round, replace=False))
-        print(f"  Federated MLP: sampled {num_clients_per_round}/{len(all_domain_ids)} clients: {selected_ids}")
-    else:
-        selected_ids = all_domain_ids
+    selected_ids = select_federated_client_ids(
+        client_ids=all_domain_ids,
+        num_clients_per_round=num_clients_per_round,
+        sampling_strategy=sampling_strategy,
+        seed=seed,
+    )
+    if sampling_strategy == "random" and num_clients_per_round is not None:
+        print(
+            f"  Federated MLP: sampled {len(selected_ids)}/{len(all_domain_ids)} clients: {selected_ids}"
+        )
 
     # Per-client persistent optimizers (same as FedGNN: Adam state preserved)
     client_optimizers = {}
@@ -130,11 +159,13 @@ def run_federated_mlp(
         if (r + 1) % 5 == 0 or r == 0 or r == rounds - 1:
             global_model.eval()
             all_preds, all_truths = [], []
-            for domain_id, (X_v, y_v) in val_data.items():
+            for domain_id, (X_v, _y_v_norm, y_v_raw) in val_data.items():
+                stats = domain_stats[domain_id]
                 with torch.no_grad():
-                    pred = global_model(X_v).cpu().numpy()
+                    pred_norm = global_model(X_v).cpu().numpy()
+                pred = denormalize_coords(pred_norm, stats["coord_min"], stats["coord_max"])
                 all_preds.append(pred)
-                all_truths.append(y_v.cpu().numpy())
+                all_truths.append(y_v_raw)
             if all_preds:
                 eval_metrics = compute_all_metrics(
                     np.concatenate(all_preds), np.concatenate(all_truths)
@@ -153,10 +184,12 @@ def run_federated_mlp(
     results = {}
     all_preds, all_truths = [], []
 
-    for domain_id, (X_v, y_v) in val_data.items():
+    for domain_id, (X_v, _y_v_norm, y_raw) in val_data.items():
+        stats = domain_stats[domain_id]
         with torch.no_grad():
-            pred = global_model(X_v).cpu().numpy()
-        y_np = y_v.cpu().numpy()
+            pred_norm = global_model(X_v).cpu().numpy()
+        pred = denormalize_coords(pred_norm, stats["coord_min"], stats["coord_max"])
+        y_np = y_raw
         metrics = compute_all_metrics(pred, y_np)
         results[domain_id] = metrics
         all_preds.append(pred)

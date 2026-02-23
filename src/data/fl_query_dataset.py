@@ -3,6 +3,8 @@
 import torch
 from torch.utils.data import Dataset
 
+from src.data.normalization import normalize_rssi_values
+
 
 class FLQueryDataset(Dataset):
     """
@@ -29,6 +31,8 @@ class FLQueryDataset(Dataset):
         self.coord_min = graph_data.coord_min.numpy()
         self.coord_max = graph_data.coord_max.numpy()
         self.coord_range = self.coord_max - self.coord_min
+        self.rssi_min = float(graph_data.rssi_min.item()) if hasattr(graph_data, "rssi_min") else -110.0
+        self.rssi_max = float(graph_data.rssi_max.item()) if hasattr(graph_data, "rssi_max") else -30.0
 
     def update_graph_features(self, encoder, device="cpu"):
         """
@@ -61,7 +65,8 @@ class FLQueryDataset(Dataset):
         q = self.queries[idx]
 
         ap_ids = torch.tensor(q["ap_ids"], dtype=torch.long)
-        rssi = torch.tensor(q["rssi"], dtype=torch.float).unsqueeze(-1)
+        rssi_norm = normalize_rssi_values(q["rssi"], self.rssi_min, self.rssi_max)
+        rssi = torch.tensor(rssi_norm, dtype=torch.float).unsqueeze(-1)
         
         # Normalize query position using the same stats as RPs
         pos_raw = torch.tensor(q["pos"], dtype=torch.float)

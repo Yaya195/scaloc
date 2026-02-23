@@ -5,6 +5,12 @@ Check raw training data for samples with no valid AP readings.
 import pandas as pd
 import numpy as np
 from pathlib import Path
+import sys
+
+CONFIGS_DIR = Path(__file__).resolve().parent / "configs"
+if str(CONFIGS_DIR) not in sys.path:
+    sys.path.insert(0, str(CONFIGS_DIR))
+from load_config import load_config
 
 RAW_DATA = Path("data/raw/trainingData.csv")
 
@@ -24,7 +30,8 @@ def analyze_raw_data():
     # Analyze each row
     empty_samples = []
     weak_only_samples = []
-    min_rssi_threshold = -95
+    data_cfg = load_config("data_config")
+    min_rssi_threshold = data_cfg.get("preprocess", {}).get("min_rssi_threshold", -104)
     
     for idx, row in df.iterrows():
         wap_values = row[wap_cols].values

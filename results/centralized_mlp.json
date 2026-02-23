@@ -4,519 +4,520 @@
     "type": "centralized_mlp",
     "epochs": 50
   },
-  "start_time": "2026-02-21 19:13:10",
+  "start_time": "2026-02-23 14:49:36",
   "rounds": [
     {
       "round": 1,
       "client_losses": {
-        "centralized": 388.9171756364142
+        "centralized": 0.09864692715188814
       },
-      "avg_loss": 388.9171756364142,
+      "avg_loss": 0.09864692715188814,
       "eval_metrics": {
-        "mean_error": 15.09827995300293,
-        "median_error": 12.311382293701172,
-        "p75_error": 20.943016052246094,
-        "p90_error": 29.689821243286133,
-        "rmse": 18.416828155517578,
-        "cep_5m": 0.14401440144014402,
-        "cep_10m": 0.40054005400540055,
-        "max_error": 73.46676635742188,
-        "std_error": 10.546161651611328
+        "mean_error": 32.348670959472656,
+        "median_error": 30.962413787841797,
+        "p75_error": 45.85742664337158,
+        "p90_error": 54.05599098205566,
+        "rmse": 35.95750427246094,
+        "cep_5m": 0.011764705882352941,
+        "cep_10m": 0.07941176470588235,
+        "max_error": 62.21520233154297,
+        "std_error": 15.7004976272583
       },
       "round_time_sec": null
     },
     {
       "round": 2,
       "client_losses": {
-        "centralized": 111.90188661188941
+        "centralized": 0.0323111725054563
       },
-      "avg_loss": 111.90188661188941,
+      "avg_loss": 0.0323111725054563,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 3,
       "client_losses": {
-        "centralized": 85.4217653550519
+        "centralized": 0.01672454998784122
       },
-      "avg_loss": 85.4217653550519,
+      "avg_loss": 0.01672454998784122,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 4,
       "client_losses": {
-        "centralized": 72.75508654922534
+        "centralized": 0.011164663921272943
       },
-      "avg_loss": 72.75508654922534,
+      "avg_loss": 0.011164663921272943,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 5,
       "client_losses": {
-        "centralized": 64.1372199349848
+        "centralized": 0.008940481994715001
       },
-      "avg_loss": 64.1372199349848,
+      "avg_loss": 0.008940481994715001,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 6,
       "client_losses": {
-        "centralized": 58.355927476545624
+        "centralized": 0.007776687963910046
       },
-      "avg_loss": 58.355927476545624,
+      "avg_loss": 0.007776687963910046,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 7,
       "client_losses": {
-        "centralized": 53.929224247334474
+        "centralized": 0.0070335769560188055
       },
-      "avg_loss": 53.929224247334474,
+      "avg_loss": 0.0070335769560188055,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 8,
       "client_losses": {
-        "centralized": 49.967756228431625
+        "centralized": 0.006112728264212372
       },
-      "avg_loss": 49.967756228431625,
+      "avg_loss": 0.006112728264212372,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 9,
       "client_losses": {
-        "centralized": 46.81502904615985
+        "centralized": 0.005512066843313357
       },
-      "avg_loss": 46.81502904615985,
+      "avg_loss": 0.005512066843313357,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 10,
       "client_losses": {
-        "centralized": 44.03898543330251
+        "centralized": 0.004979809184396077
       },
-      "avg_loss": 44.03898543330251,
+      "avg_loss": 0.004979809184396077,
       "eval_metrics": {
-        "mean_error": 10.897490501403809,
-        "median_error": 8.409733772277832,
-        "p75_error": 14.33281946182251,
-        "p90_error": 21.719038009643555,
-        "rmse": 14.35299015045166,
-        "cep_5m": 0.27542754275427545,
-        "cep_10m": 0.5877587758775877,
-        "max_error": 65.85621643066406,
-        "std_error": 9.34093189239502
+        "mean_error": 9.882134437561035,
+        "median_error": 8.120553016662598,
+        "p75_error": 11.866897106170654,
+        "p90_error": 19.694814491271984,
+        "rmse": 12.589201927185059,
+        "cep_5m": 0.26176470588235295,
+        "cep_10m": 0.6558823529411765,
+        "max_error": 54.87624740600586,
+        "std_error": 7.799449920654297
       },
       "round_time_sec": null
     },
     {
       "round": 11,
       "client_losses": {
-        "centralized": 41.90088038429187
+        "centralized": 0.00460977313138308
       },
-      "avg_loss": 41.90088038429187,
+      "avg_loss": 0.00460977313138308,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 12,
       "client_losses": {
-        "centralized": 40.55485925950421
+        "centralized": 0.004257358651283005
       },
-      "avg_loss": 40.55485925950421,
+      "avg_loss": 0.004257358651283005,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 13,
       "client_losses": {
-        "centralized": 39.061965611203306
+        "centralized": 0.004131687513094336
       },
-      "avg_loss": 39.061965611203306,
+      "avg_loss": 0.004131687513094336,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 14,
       "client_losses": {
-        "centralized": 37.034821795497294
+        "centralized": 0.0038378507763679537
       },
-      "avg_loss": 37.034821795497294,
+      "avg_loss": 0.0038378507763679537,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 15,
       "client_losses": {
-        "centralized": 35.39952540014335
+        "centralized": 0.0036530173974969084
       },
-      "avg_loss": 35.39952540014335,
+      "avg_loss": 0.0036530173974969084,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 16,
       "client_losses": {
-        "centralized": 35.20891529954132
+        "centralized": 0.0035897770948294136
       },
-      "avg_loss": 35.20891529954132,
+      "avg_loss": 0.0035897770948294136,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 17,
       "client_losses": {
-        "centralized": 33.9875077802652
+        "centralized": 0.003452940138116006
       },
-      "avg_loss": 33.9875077802652,
+      "avg_loss": 0.003452940138116006,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 18,
       "client_losses": {
-        "centralized": 32.93777102136152
+        "centralized": 0.003229790038266589
       },
-      "avg_loss": 32.93777102136152,
+      "avg_loss": 0.003229790038266589,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 19,
       "client_losses": {
-        "centralized": 32.132048364620886
+        "centralized": 0.003174033049227936
       },
-      "avg_loss": 32.132048364620886,
+      "avg_loss": 0.003174033049227936,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 20,
       "client_losses": {
-        "centralized": 31.443513615721674
+        "centralized": 0.0030894605184180867
       },
-      "avg_loss": 31.443513615721674,
+      "avg_loss": 0.0030894605184180867,
       "eval_metrics": {
-        "mean_error": 10.321414947509766,
-        "median_error": 7.7440972328186035,
-        "p75_error": 13.192529678344727,
-        "p90_error": 20.69709014892578,
-        "rmse": 13.817190170288086,
-        "cep_5m": 0.3132313231323132,
-        "cep_10m": 0.6174617461746175,
-        "max_error": 65.05278015136719,
-        "std_error": 9.186029434204102
+        "mean_error": 7.842803001403809,
+        "median_error": 6.253373146057129,
+        "p75_error": 10.087979555130005,
+        "p90_error": 16.488162994384766,
+        "rmse": 10.02491569519043,
+        "cep_5m": 0.38235294117647056,
+        "cep_10m": 0.7411764705882353,
+        "max_error": 48.14104461669922,
+        "std_error": 6.2441487312316895
       },
       "round_time_sec": null
     },
     {
       "round": 21,
       "client_losses": {
-        "centralized": 30.272245364173816
+        "centralized": 0.003049501751933897
       },
-      "avg_loss": 30.272245364173816,
+      "avg_loss": 0.003049501751933897,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 22,
       "client_losses": {
-        "centralized": 29.84555700430916
+        "centralized": 0.0029857089366054253
       },
-      "avg_loss": 29.84555700430916,
+      "avg_loss": 0.0029857089366054253,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 23,
       "client_losses": {
-        "centralized": 29.19433125805625
+        "centralized": 0.0028723563392838787
       },
-      "avg_loss": 29.19433125805625,
+      "avg_loss": 0.0028723563392838787,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 24,
       "client_losses": {
-        "centralized": 28.92232696189758
+        "centralized": 0.0027478525843766945
       },
-      "avg_loss": 28.92232696189758,
+      "avg_loss": 0.0027478525843766945,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 25,
       "client_losses": {
-        "centralized": 28.15776067838025
+        "centralized": 0.0027119475638582593
       },
-      "avg_loss": 28.15776067838025,
+      "avg_loss": 0.0027119475638582593,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 26,
       "client_losses": {
-        "centralized": 27.8291192591382
+        "centralized": 0.002633256841421364
       },
-      "avg_loss": 27.8291192591382,
+      "avg_loss": 0.002633256841421364,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 27,
       "client_losses": {
-        "centralized": 27.67643533565607
+        "centralized": 0.0025089060913564432
       },
-      "avg_loss": 27.67643533565607,
+      "avg_loss": 0.0025089060913564432,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 28,
       "client_losses": {
-        "centralized": 27.163092367902063
+        "centralized": 0.0025298232988764844
       },
-      "avg_loss": 27.163092367902063,
+      "avg_loss": 0.0025298232988764844,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 29,
       "client_losses": {
-        "centralized": 26.252068194545732
+        "centralized": 0.002411413989547226
       },
-      "avg_loss": 26.252068194545732,
+      "avg_loss": 0.002411413989547226,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 30,
       "client_losses": {
-        "centralized": 25.951843758488007
+        "centralized": 0.0023785768453741356
       },
-      "avg_loss": 25.951843758488007,
+      "avg_loss": 0.0023785768453741356,
       "eval_metrics": {
-        "mean_error": 10.017126083374023,
-        "median_error": 7.6692399978637695,
-        "p75_error": 12.951581478118896,
-        "p90_error": 20.33077621459961,
-        "rmse": 13.514498710632324,
-        "cep_5m": 0.324032403240324,
-        "cep_10m": 0.6372637263726373,
-        "max_error": 64.95420837402344,
-        "std_error": 9.07187271118164
+        "mean_error": 7.2287068367004395,
+        "median_error": 5.679661750793457,
+        "p75_error": 9.600026845932007,
+        "p90_error": 15.59817047119141,
+        "rmse": 9.410404205322266,
+        "cep_5m": 0.4588235294117647,
+        "cep_10m": 0.7705882352941177,
+        "max_error": 45.89683151245117,
+        "std_error": 6.025073051452637
       },
       "round_time_sec": null
     },
     {
       "round": 31,
       "client_losses": {
-        "centralized": 25.95990337666208
+        "centralized": 0.002374406493756743
       },
-      "avg_loss": 25.95990337666208,
+      "avg_loss": 0.002374406493756743,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 32,
       "client_losses": {
-        "centralized": 25.691021765926642
+        "centralized": 0.002284734001723192
       },
-      "avg_loss": 25.691021765926642,
+      "avg_loss": 0.002284734001723192,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 33,
       "client_losses": {
-        "centralized": 25.38957331801534
+        "centralized": 0.0023020439751682774
       },
-      "avg_loss": 25.38957331801534,
+      "avg_loss": 0.0023020439751682774,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 34,
       "client_losses": {
-        "centralized": 25.010091827613365
+        "centralized": 0.00218038690195138
       },
-      "avg_loss": 25.010091827613365,
+      "avg_loss": 0.00218038690195138,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 35,
       "client_losses": {
-        "centralized": 24.78554121551023
+        "centralized": 0.002191653349510734
       },
-      "avg_loss": 24.78554121551023,
+      "avg_loss": 0.002191653349510734,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 36,
       "client_losses": {
-        "centralized": 24.736682643461073
+        "centralized": 0.002244601988913639
       },
-      "avg_loss": 24.736682643461073,
+      "avg_loss": 0.002244601988913639,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 37,
       "client_losses": {
-        "centralized": 24.478525925295912
+        "centralized": 0.002210949737918637
       },
-      "avg_loss": 24.478525925295912,
+      "avg_loss": 0.002210949737918637,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 38,
       "client_losses": {
-        "centralized": 24.249159935586324
+        "centralized": 0.002076353447230917
       },
-      "avg_loss": 24.249159935586324,
+      "avg_loss": 0.002076353447230917,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 39,
       "client_losses": {
-        "centralized": 23.50801597300833
+        "centralized": 0.0021113205612415357
       },
-      "avg_loss": 23.50801597300833,
+      "avg_loss": 0.0021113205612415357,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 40,
       "client_losses": {
-        "centralized": 23.7060625070161
+        "centralized": 0.0019775807879687775
       },
-      "avg_loss": 23.7060625070161,
+      "avg_loss": 0.0019775807879687775,
       "eval_metrics": {
-        "mean_error": 9.96683406829834,
-        "median_error": 7.505288124084473,
-        "p75_error": 12.947317600250244,
-        "p90_error": 20.3280086517334,
-        "rmse": 13.511584281921387,
-        "cep_5m": 0.33123312331233123,
-        "cep_10m": 0.6318631863186318,
-        "max_error": 68.22417449951172,
-        "std_error": 9.122781753540039
+        "mean_error": 7.007771015167236,
+        "median_error": 5.54274845123291,
+        "p75_error": 9.229644775390625,
+        "p90_error": 15.103447151184087,
+        "rmse": 9.019423484802246,
+        "cep_5m": 0.45588235294117646,
+        "cep_10m": 0.7852941176470588,
+        "max_error": 44.89391326904297,
+        "std_error": 5.678128719329834
       },
       "round_time_sec": null
     },
     {
       "round": 41,
       "client_losses": {
-        "centralized": 23.013210649275702
+        "centralized": 0.0019971205398351664
       },
-      "avg_loss": 23.013210649275702,
+      "avg_loss": 0.0019971205398351664,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 42,
       "client_losses": {
-        "centralized": 23.144669894620154
+        "centralized": 0.0019604941822647577
       },
-      "avg_loss": 23.144669894620154,
+      "avg_loss": 0.0019604941822647577,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 43,
       "client_losses": {
-        "centralized": 23.41276574824784
+        "centralized": 0.0019215225068379253
       },
-      "avg_loss": 23.41276574824784,
+      "avg_loss": 0.0019215225068379253,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 44,
       "client_losses": {
-        "centralized": 22.90020580537066
+        "centralized": 0.0018803502935620527
       },
-      "avg_loss": 22.90020580537066,
+      "avg_loss": 0.0018803502935620527,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 45,
       "client_losses": {
-        "centralized": 22.549957603503653
+        "centralized": 0.0018661987139946884
       },
-      "avg_loss": 22.549957603503653,
+      "avg_loss": 0.0018661987139946884,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 46,
       "client_losses": {
-        "centralized": 22.11147978068165
+        "centralized": 0.0019043588877788612
       },
-      "avg_loss": 22.11147978068165,
+      "avg_loss": 0.0019043588877788612,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 47,
       "client_losses": {
-        "centralized": 22.137472039250316
+        "centralized": 0.00187637664503344
       },
-      "avg_loss": 22.137472039250316,
+      "avg_loss": 0.00187637664503344,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 48,
       "client_losses": {
-        "centralized": 22.04200513416548
+        "centralized": 0.0018326679821170512
       },
-      "avg_loss": 22.04200513416548,
+      "avg_loss": 0.0018326679821170512,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 49,
       "client_losses": {
-        "centralized": 21.840734898852382
+        "centralized": 0.0017488884965016964
       },
-      "avg_loss": 21.840734898852382,
+      "avg_loss": 0.0017488884965016964,
       "eval_metrics": {},
       "round_time_sec": null
     },
     {
       "round": 50,
       "client_losses": {
-        "centralized": 22.00895929183224
+        "centralized": 0.0017330048786890176
       },
-      "avg_loss": 22.00895929183224,
+      "avg_loss": 0.0017330048786890176,
       "eval_metrics": {
-        "mean_error": 9.719831466674805,
-        "median_error": 7.1203203201293945,
-        "p75_error": 12.432533264160156,
-        "p90_error": 20.323261260986328,
-        "rmse": 13.289260864257812,
-        "cep_5m": 0.3438343834383438,
-        "cep_10m": 0.6615661566156615,
-        "max_error": 68.12821197509766,
-        "std_error": 9.06252384185791
+        "mean_error": 6.677850723266602,
+        "median_error": 4.995254039764404,
+        "p75_error": 9.042710304260254,
+        "p90_error": 14.46632061004639,
+        "rmse": 8.808906555175781,
+        "cep_5m": 0.5,
+        "cep_10m": 0.7970588235294118,
+        "max_error": 48.27613067626953,
+        "std_error": 5.744836330413818
       },
       "round_time_sec": null
     }
   ],
-  "end_time": "2026-02-21 19:15:37",
-  "total_rounds": 50
+  "last_update": "2026-02-23 14:50:07",
+  "total_rounds": 50,
+  "end_time": "2026-02-23 14:50:07"
 }
