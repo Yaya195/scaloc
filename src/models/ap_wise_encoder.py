@@ -63,6 +63,69 @@ class APWiseEncoder(nn.Module):
             elif isinstance(module, nn.Embedding):
                 nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
+    def encode_packed(
+        self,
+        ap_ids: torch.Tensor,
+        rssi: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Encode a packed batch of variable-length fingerprints.
+
+        Args:
+            ap_ids: (B, L) long tensor with AP ids (padding can be any value)
+            rssi: (B, L, 1) float tensor
+            mask: (B, L) bool tensor, True for valid elements
+
+        Returns:
+            z: (B, latent_dim) batch embedding
+        """
+        if ap_ids.ndim != 2:
+            raise ValueError(f"Expected ap_ids shape (B, L), got {tuple(ap_ids.shape)}")
+        if rssi.ndim != 3:
+            raise ValueError(f"Expected rssi shape (B, L, 1), got {tuple(rssi.shape)}")
+        if mask.ndim != 2:
+            raise ValueError(f"Expected mask shape (B, L), got {tuple(mask.shape)}")
+
+        batch_size, seq_len = ap_ids.shape
+        ap_ids_safe = ap_ids.clamp(min=0)
+
+        e = self.ap_emb(ap_ids_safe)                 # (B, L, ap_emb_dim)
+        x = torch.cat([e, rssi], dim=-1)             # (B, L, ap_emb_dim + 1)
+        z_j = self.modulator(x)                      # (B, L, latent_dim)
+
+        valid = mask.unsqueeze(-1).to(z_j.dtype)     # (B, L, 1)
+
+        if self.pooling == "mean":
+            summed = (z_j * valid).sum(dim=1)        # (B, latent_dim)
+            counts = valid.sum(dim=1).clamp(min=1.0) # (B, 1)
+            z = summed / counts
+        elif self.pooling == "sum":
+            z = (z_j * valid).sum(dim=1)
+        elif self.pooling == "attention":
+            scores = self.attention_scorer(z_j).squeeze(-1)               # (B, L)
+            scores = scores.masked_fill(~mask, float("-inf"))
+            empty_rows = ~mask.any(dim=1)
+            if empty_rows.any():
+                scores = scores.clone()
+                scores[empty_rows] = 0.0
+            weights = F.softmax(scores, dim=1).unsqueeze(-1)              # (B, L, 1)
+            weights = weights * valid
+            norm = weights.sum(dim=1, keepdim=True).clamp(min=1e-8)
+            weights = weights / norm
+            z = (weights * z_j).sum(dim=1)
+        else:
+            raise ValueError(f"Unknown pooling: {self.pooling}. Choose from: mean, sum, attention")
+
+        if batch_size == 0 or seq_len == 0:
+            return torch.zeros((batch_size, self.latent_dim), dtype=torch.float32, device=ap_ids.device)
+
+        empty = ~mask.any(dim=1)
+        if empty.any():
+            z = z.clone()
+            z[empty] = 0.0
+        return z
+
     def forward(self, ap_ids: torch.Tensor, rssi: torch.Tensor) -> torch.Tensor:
         """
         Args:

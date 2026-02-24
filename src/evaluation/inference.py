@@ -16,6 +16,36 @@ from typing import Dict, List, Tuple, Optional
 from src.evaluation.metrics import compute_all_metrics
 
 
+def _pack_rp_fingerprints(fingerprints, device: str):
+    num_rps = len(fingerprints)
+    max_len = max((len(fp["ap_ids"]) for fp in fingerprints), default=0)
+
+    if num_rps == 0 or max_len == 0:
+        return (
+            torch.empty((0, 0), dtype=torch.long, device=device),
+            torch.empty((0, 0, 1), dtype=torch.float, device=device),
+            torch.empty((0, 0), dtype=torch.bool, device=device),
+        )
+
+    ap_ids = torch.zeros((num_rps, max_len), dtype=torch.long)
+    rssi = torch.zeros((num_rps, max_len, 1), dtype=torch.float)
+    mask = torch.zeros((num_rps, max_len), dtype=torch.bool)
+
+    for row, fp in enumerate(fingerprints):
+        length = len(fp["ap_ids"])
+        if length == 0:
+            continue
+        ap_ids[row, :length] = torch.tensor(fp["ap_ids"], dtype=torch.long)
+        rssi[row, :length, 0] = torch.tensor(fp["rssi"], dtype=torch.float)
+        mask[row, :length] = True
+
+    return (
+        ap_ids.to(device, non_blocking=True),
+        rssi.to(device, non_blocking=True),
+        mask.to(device, non_blocking=True),
+    )
+
+
 def select_domain_by_strongest_ap(
     query_aps: List[dict],
     domain_ap_sets: Dict[str, set],
@@ -82,20 +112,16 @@ def predict_position(
     rssi = rssi.to(device)
     
     # Re-encode RP features with current encoder
-    rp_feats = []
-    for fp in graph.rp_fingerprints:
-        rp_ap = torch.tensor(fp["ap_ids"], dtype=torch.long).to(device)
-        rp_rssi = torch.tensor(fp["rssi"], dtype=torch.float).unsqueeze(-1).to(device)
-        rp_feats.append(encoder(rp_ap, rp_rssi))
+    rp_ap_ids, rp_rssi, rp_mask = _pack_rp_fingerprints(graph.rp_fingerprints, device)
+    rp_feats = encoder.encode_packed(rp_ap_ids, rp_rssi, rp_mask)
     
-    graph_live = graph.clone()
-    graph_live.x = torch.stack(rp_feats, dim=0)
+    graph.x = rp_feats
     
     # Encode query
     z_q = encoder(ap_ids, rssi)
     
     # Run GNN
-    p_hat, w = model(graph_live, z_q)
+    p_hat, w = model(graph, z_q)
     
     return p_hat.cpu().numpy(), w.cpu().numpy()
 
@@ -134,14 +160,10 @@ def evaluate_model_on_domain(
     coord_max = dataset.coord_max
     
     # Re-encode graph with current encoder
-    rp_feats = []
-    for fp in graph.rp_fingerprints:
-        rp_ap = torch.tensor(fp["ap_ids"], dtype=torch.long).to(device)
-        rp_rssi = torch.tensor(fp["rssi"], dtype=torch.float).unsqueeze(-1).to(device)
-        rp_feats.append(encoder(rp_ap, rp_rssi))
+    rp_ap_ids, rp_rssi, rp_mask = _pack_rp_fingerprints(graph.rp_fingerprints, device)
+    rp_feats = encoder.encode_packed(rp_ap_ids, rp_rssi, rp_mask)
     
-    graph_live = graph.clone()
-    graph_live.x = torch.stack(rp_feats, dim=0)
+    graph.x = rp_feats
     
     preds = []
     truths = []
@@ -152,7 +174,7 @@ def evaluate_model_on_domain(
         rssi = rssi.to(device)
         
         z_q = encoder(ap_ids, rssi)
-        p_hat, _ = model(graph_live, z_q)
+        p_hat, _ = model(graph, z_q)
         
         # Denormalize
         p_hat_metric = denormalize_position(p_hat.cpu().numpy(), coord_min, coord_max)

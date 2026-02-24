@@ -46,18 +46,34 @@ class FLQueryDataset(Dataset):
         """
         encoder = encoder.to(device)
         encoder.eval()
-        node_feats = []
-        
+        fingerprints = self.graph.rp_fingerprints
+        num_rps = len(fingerprints)
+        max_len = max((len(fp["ap_ids"]) for fp in fingerprints), default=0)
+
+        if num_rps == 0 or max_len == 0:
+            self.graph.x = torch.empty((0, encoder.latent_dim), dtype=torch.float)
+            return
+
+        ap_ids = torch.zeros((num_rps, max_len), dtype=torch.long)
+        rssi = torch.zeros((num_rps, max_len, 1), dtype=torch.float)
+        mask = torch.zeros((num_rps, max_len), dtype=torch.bool)
+
+        for row, fp in enumerate(fingerprints):
+            length = len(fp["ap_ids"])
+            if length == 0:
+                continue
+            ap_ids[row, :length] = torch.tensor(fp["ap_ids"], dtype=torch.long)
+            rssi[row, :length, 0] = torch.tensor(fp["rssi"], dtype=torch.float)
+            mask[row, :length] = True
+
         with torch.no_grad():
-            for fp in self.graph.rp_fingerprints:
-                ap_ids = torch.tensor(fp["ap_ids"], dtype=torch.long).to(device)
-                rssi = torch.tensor(fp["rssi"], dtype=torch.float).unsqueeze(-1).to(device)
-                z = encoder(ap_ids, rssi)  # (latent_dim,)
-                node_feats.append(z.cpu().numpy())
-        
-        import numpy as np
-        x = np.stack(node_feats, axis=0)
-        self.graph.x = torch.tensor(x, dtype=torch.float)
+            z = encoder.encode_packed(
+                ap_ids.to(device, non_blocking=True),
+                rssi.to(device, non_blocking=True),
+                mask.to(device, non_blocking=True),
+            )
+
+        self.graph.x = z.detach().cpu().to(dtype=torch.float)
     
     def __len__(self):
         return len(self.queries)

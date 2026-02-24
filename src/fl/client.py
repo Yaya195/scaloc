@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from contextlib import nullcontext
 
 
 class FLClient:
@@ -16,6 +16,12 @@ class FLClient:
         self.encoder = encoder.to(device)
         self.dataset = dataset
         self.device = device
+        self.use_amp = device.startswith("cuda") and torch.cuda.is_available()
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        self._cached_rp_device = None
+        self._cached_rp_ap_ids = None
+        self._cached_rp_rssi = None
+        self._cached_rp_mask = None
 
         params = list(self.model.parameters()) + list(self.encoder.parameters())
         self.optimizer = torch.optim.Adam(params, lr=lr)
@@ -28,90 +34,105 @@ class FLClient:
         }
 
     def set_parameters(self, params):
-        # Move parameters to the correct device before loading
-        model_params = {k: v.to(self.device) for k, v in params["model"].items()}
-        encoder_params = {k: v.to(self.device) for k, v in params["encoder"].items()}
-        
-        self.model.load_state_dict(model_params)
-        self.encoder.load_state_dict(encoder_params)
-        
-        # Re-encode graph node features with updated encoder
-        # (no_grad — training re-encodes with gradients per batch in train_one_epoch)
-        self.dataset.update_graph_features(self.encoder, self.device)
+        self.model.load_state_dict(params["model"])
+        self.encoder.load_state_dict(params["encoder"])
         
         # NOTE: optimizer state is intentionally preserved across rounds.
         # Resetting it every round destroys Adam's momentum, preventing convergence
         # with small local_epochs. Only model weights are synchronized in FedAvg.
 
+    def _ensure_packed_rp_tensors(self):
+        if self._cached_rp_device == self.device and self._cached_rp_ap_ids is not None:
+            return
+
+        fingerprints = self.dataset.graph.rp_fingerprints
+        num_rps = len(fingerprints)
+        max_len = max((len(fp["ap_ids"]) for fp in fingerprints), default=0)
+
+        if num_rps == 0 or max_len == 0:
+            self._cached_rp_ap_ids = torch.empty((0, 0), dtype=torch.long, device=self.device)
+            self._cached_rp_rssi = torch.empty((0, 0, 1), dtype=torch.float, device=self.device)
+            self._cached_rp_mask = torch.empty((0, 0), dtype=torch.bool, device=self.device)
+            self._cached_rp_device = self.device
+            return
+
+        ap_ids = torch.zeros((num_rps, max_len), dtype=torch.long)
+        rssi = torch.zeros((num_rps, max_len, 1), dtype=torch.float)
+        mask = torch.zeros((num_rps, max_len), dtype=torch.bool)
+
+        for row, fp in enumerate(fingerprints):
+            length = len(fp["ap_ids"])
+            if length == 0:
+                continue
+            ap_ids[row, :length] = torch.tensor(fp["ap_ids"], dtype=torch.long)
+            rssi[row, :length, 0] = torch.tensor(fp["rssi"], dtype=torch.float)
+            mask[row, :length] = True
+
+        self._cached_rp_ap_ids = ap_ids.to(self.device, non_blocking=True)
+        self._cached_rp_rssi = rssi.to(self.device, non_blocking=True)
+        self._cached_rp_mask = mask.to(self.device, non_blocking=True)
+        self._cached_rp_device = self.device
+
     def train_one_epoch(self, batch_size=1):
         self.model.train()
         self.encoder.train()
-        # Use batch_size=1 because encoder expects single queries with variable-length AP sets
-        loader = DataLoader(self.dataset, batch_size=1, shuffle=True)
+        self._ensure_packed_rp_tensors()
 
-        # Get domain graph structure (topology + raw fingerprints, same for all batches)
         graph = self.dataset.graph.to(self.device)
 
         total_loss = 0.0
         num_batches = 0
-        for batch in loader:
-            ap_ids, rssi, true_pos = batch
 
-            # batch_size=1, so squeeze the batch dimension
-            ap_ids = ap_ids.squeeze(0).to(self.device)
-            rssi = rssi.squeeze(0).to(self.device)
-            true_pos = true_pos.squeeze(0).to(self.device)
+        indices = torch.randperm(len(self.dataset)).tolist()
+        for index in indices:
+            ap_ids, rssi, true_pos = self.dataset[index]
+            ap_ids = ap_ids.to(self.device, non_blocking=True)
+            rssi = rssi.to(self.device, non_blocking=True)
+            true_pos = true_pos.to(self.device, non_blocking=True)
 
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
 
-            # ----------------------------------------------------------------
-            # Re-encode RP node features WITH gradients so the encoder
-            # is jointly trained through both the RP path and the query path.
-            # spec §5.1: x_i = phi_enc(r_bar_i), z_q = phi_enc(r_q)
-            # Both must use the same encoder in the same forward pass.
-            # ----------------------------------------------------------------
-            rp_feats = []
-            for fp in graph.rp_fingerprints:
-                rp_ap_ids = torch.tensor(fp["ap_ids"], dtype=torch.long).to(self.device)
-                rp_rssi = torch.tensor(fp["rssi"], dtype=torch.float).unsqueeze(-1).to(self.device)
-                rp_feats.append(self.encoder(rp_ap_ids, rp_rssi))  # (latent_dim,)
-            
-            # Build a differentiable graph copy with live node features
-            graph_live = graph.clone()
-            graph_live.x = torch.stack(rp_feats, dim=0)  # (N, latent_dim) — has grad_fn
+            autocast_ctx = (
+                torch.autocast(device_type="cuda", dtype=torch.float16)
+                if self.use_amp
+                else nullcontext()
+            )
+            with autocast_ctx:
+                rp_feats = self.encoder.encode_packed(
+                    self._cached_rp_ap_ids,
+                    self._cached_rp_rssi,
+                    self._cached_rp_mask,
+                )
 
-            z_q = self.encoder(ap_ids, rssi)  # (latent_dim,)
-            
-            # Check for NaN in encoder output
-            if torch.isnan(z_q).any():
-                print(f"  WARNING: NaN in encoder output for client {self.client_id}")
-                print(f"    AP count: {len(ap_ids)}")
-                continue
-            
-            p_hat, _ = self.model(graph_live, z_q)
-            
-            # Check for NaN in model output
-            if torch.isnan(p_hat).any():
-                print(f"  WARNING: NaN in model output for client {self.client_id}")
-                continue
+                graph.x = rp_feats
 
-            loss = self.criterion(p_hat, true_pos)
-            
-            # Check for NaN loss
-            if torch.isnan(loss):
-                print(f"  WARNING: NaN loss for client {self.client_id}")
-                print(f"    p_hat: {p_hat}, true_pos: {true_pos}")
-                continue
-            
-            loss.backward()
-            
-            # Gradient clipping to prevent explosion
+                z_q = self.encoder(ap_ids, rssi)
+                if torch.isnan(z_q).any():
+                    print(f"  WARNING: NaN in encoder output for client {self.client_id}")
+                    print(f"    AP count: {len(ap_ids)}")
+                    continue
+
+                p_hat, _ = self.model(graph, z_q)
+
+                if torch.isnan(p_hat).any():
+                    print(f"  WARNING: NaN in model output for client {self.client_id}")
+                    continue
+
+                loss = self.criterion(p_hat, true_pos)
+
+                if torch.isnan(loss):
+                    print(f"  WARNING: NaN loss for client {self.client_id}")
+                    print(f"    p_hat: {p_hat}, true_pos: {true_pos}")
+                    continue
+
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(
                 list(self.model.parameters()) + list(self.encoder.parameters()),
-                max_norm=1.0
+                max_norm=1.0,
             )
-            
-            self.optimizer.step()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
 
             total_loss += loss.item()
             num_batches += 1
