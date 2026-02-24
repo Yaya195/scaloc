@@ -14,6 +14,11 @@ setup(
         "scikit-learn",
         "networkx",
         "torch",
+        "torch-geometric",
         "pyyaml",
+        "matplotlib",
+        "jupyter",
+        "tensorboard",
+        "setuptools",
     ],
 )

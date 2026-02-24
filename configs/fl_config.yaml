@@ -7,7 +7,7 @@ federated:
   seed: 42
   
   # Client sampling
-  num_clients_per_round: 3  # Number of clients to randomly sample per round (null = use all)
+  num_clients_per_round: 5  # Number of clients to randomly sample per round (null = use all)
   sampling_strategy: random  # 'random' or 'all'
 
 # Optional parallel client training (threaded). On a single GPU this can
