@@ -72,6 +72,8 @@ def predict_position(
         p_hat_normalized: (2,) predicted position in normalized space
         weights: (num_nodes,) attention weights over RPs
     """
+    encoder = encoder.to(device)
+    model = model.to(device)
     encoder.eval()
     model.eval()
     
@@ -122,6 +124,8 @@ def evaluate_model_on_domain(
         preds: (N, 2) predicted positions in METRIC space (denormalized)
         truths: (N, 2) true positions in METRIC space (denormalized)
     """
+    encoder = encoder.to(device)
+    model = model.to(device)
     encoder.eval()
     model.eval()
     

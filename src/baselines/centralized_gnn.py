@@ -229,6 +229,8 @@ def run_centralized_gnn(
 
 def _evaluate(model, encoder, val_datasets, device):
     """Run evaluation on all validation domains, return global metrics."""
+    model = model.to(device)
+    encoder = encoder.to(device)
     model.eval()
     encoder.eval()
     all_preds, all_truths = [], []
@@ -255,6 +257,8 @@ def _predict_domain(model, encoder, val_ds, device):
     Returns positions in METRIC space (denormalized) for fair comparison
     with baselines that operate in raw coordinate space.
     """
+    model = model.to(device)
+    encoder = encoder.to(device)
     preds, truths = [], []
     graph = val_ds.graph.to(device)
     coord_min = val_ds.coord_min

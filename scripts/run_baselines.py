@@ -56,7 +56,7 @@ def run_knn(train_queries, val_queries, num_aps):
     )
 
 
-def run_centralized_mlp(train_queries, val_queries, num_aps, device, train_cfg):
+def run_centralized_mlp(train_queries, val_queries, num_aps, device, train_cfg, fl_cfg):
     """Run Centralized MLP baseline."""
     print("\n" + "=" * 60)
     print("BASELINE: Centralized MLP")
@@ -66,7 +66,7 @@ def run_centralized_mlp(train_queries, val_queries, num_aps, device, train_cfg):
         train_queries=train_queries,
         val_queries=val_queries,
         num_aps=num_aps,
-        epochs=50,
+        epochs=fl_cfg["federated"]["rounds"] * fl_cfg["federated"]["local_epochs"],  # total epochs across all rounds
         lr=float(train_cfg["training"]["learning_rate"]),
         device=device,
     )
@@ -92,7 +92,7 @@ def run_federated_mlp(train_queries, val_queries, num_aps, fl_cfg, train_cfg, de
     )
 
 
-def run_centralized_gnn(model_cfg, train_cfg, device, allowed_domains):
+def run_centralized_gnn(model_cfg, train_cfg, device, allowed_domains, fl_cfg):
     """Run Centralized GNN baseline."""
     print("\n" + "=" * 60)
     print("BASELINE: Centralized GNN")
@@ -104,7 +104,7 @@ def run_centralized_gnn(model_cfg, train_cfg, device, allowed_domains):
         ap_emb_dim=model_cfg["encoder"]["ap_emb_dim"],
         pooling=model_cfg["encoder"]["pooling"],
         arch=model_cfg["gnn"]["arch"],
-        epochs=50,
+        epochs=fl_cfg["federated"]["rounds"] * fl_cfg["federated"]["local_epochs"],  # total epochs across all rounds
         lr=float(train_cfg["training"]["learning_rate"]),
         device=device,
         allowed_domains=allowed_domains,
@@ -153,7 +153,7 @@ def main():
     print(f"  k-NN global: {comparison['knn']}")
 
     # 2. Centralized MLP
-    cmlp_results = run_centralized_mlp(train_queries, val_queries, num_aps_vector, device, train_cfg)
+    cmlp_results = run_centralized_mlp(train_queries, val_queries, num_aps_vector, device, train_cfg, fl_cfg)
     comparison["centralized_mlp"] = cmlp_results.get("global", {})
     print(f"  Centralized MLP global: {comparison['centralized_mlp']}")
 
@@ -163,7 +163,7 @@ def main():
     print(f"  Federated MLP global: {comparison['federated_mlp']}")
 
     # 4. Centralized GNN
-    cgnn_results = run_centralized_gnn(model_cfg, train_cfg, device, selected_domains)
+    cgnn_results = run_centralized_gnn(model_cfg, train_cfg, device, selected_domains, fl_cfg)
     comparison["centralized_gnn"] = cgnn_results.get("global", {})
     print(f"  Centralized GNN global: {comparison['centralized_gnn']}")
 

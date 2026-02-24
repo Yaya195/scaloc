@@ -44,6 +44,7 @@ class FLQueryDataset(Dataset):
         inline in each forward pass (see train_one_epoch). This method is only
         used for inference / round-boundary bookkeeping.
         """
+        encoder = encoder.to(device)
         encoder.eval()
         node_feats = []
         

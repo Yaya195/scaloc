@@ -48,6 +48,7 @@ def build_experiment(
     device: str,
     max_rps_per_domain: int = None,
     max_queries_per_domain: int = None,
+    seed: int = 42,
 ):
     """Build server, clients, val_datasets for a scalability experiment."""
     num_aps = model_cfg["encoder"]["num_aps"]
@@ -75,7 +76,9 @@ def build_experiment(
 
         # Optionally limit queries
         if max_queries_per_domain and len(queries) > max_queries_per_domain:
-            queries = queries[:max_queries_per_domain]
+            rng = np.random.RandomState(seed)
+            idx = rng.choice(len(queries), size=max_queries_per_domain, replace=False)
+            queries = [queries[i] for i in sorted(idx)]
 
         if not queries:
             continue
@@ -125,9 +128,7 @@ def run_one_experiment(
     """Run a single FL experiment and return results dict."""
     rounds = rounds_override or fl_cfg["federated"]["rounds"]
     local_epochs = fl_cfg["federated"]["local_epochs"]
-    num_clients_per_round = min(
-        fl_cfg["federated"]["num_clients_per_round"], len(clients)
-    )
+    num_clients_per_round = None
     seed = fl_cfg["federated"]["seed"]
     eval_every = train_cfg["logging"].get("eval_every", 5)
 
@@ -139,7 +140,7 @@ def run_one_experiment(
     run_federated_training(
         server=server, clients=clients, rounds=rounds,
         local_epochs=local_epochs, num_clients_per_round=num_clients_per_round,
-        sampling_strategy="random", seed=seed,
+        sampling_strategy="all", seed=seed,
         tracker=tracker, val_datasets=val_datasets if val_datasets else None,
         eval_every=eval_every, device=device,
     )
@@ -168,7 +169,13 @@ def vary_num_domains(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg,
         subset = {d: all_domains[d] for d in domain_ids[:k]}
         print(f"\n=== Domains K={k} ===")
         server, clients, val_ds = build_experiment(
-            subset, val_queries_all, model_cfg, fl_cfg, train_cfg, device
+            subset,
+            val_queries_all,
+            model_cfg,
+            fl_cfg,
+            train_cfg,
+            device,
+            seed=fl_cfg["federated"]["seed"],
         )
         r = run_one_experiment(
             f"scale_domains_{k}", server, clients, val_ds, fl_cfg, train_cfg, device
@@ -185,8 +192,14 @@ def vary_graph_size(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, 
         label = max_rps if max_rps else "all"
         print(f"\n=== Max RPs per domain: {label} ===")
         server, clients, val_ds = build_experiment(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device,
+            all_domains,
+            val_queries_all,
+            model_cfg,
+            fl_cfg,
+            train_cfg,
+            device,
             max_rps_per_domain=max_rps,
+            seed=fl_cfg["federated"]["seed"],
         )
         r = run_one_experiment(
             f"scale_rps_{label}", server, clients, val_ds, fl_cfg, train_cfg, device
@@ -203,8 +216,14 @@ def vary_data_volume(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg,
         label = max_q if max_q else "all"
         print(f"\n=== Max queries per domain: {label} ===")
         server, clients, val_ds = build_experiment(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device,
+            all_domains,
+            val_queries_all,
+            model_cfg,
+            fl_cfg,
+            train_cfg,
+            device,
             max_queries_per_domain=max_q,
+            seed=fl_cfg["federated"]["seed"],
         )
         r = run_one_experiment(
             f"scale_queries_{label}", server, clients, val_ds, fl_cfg, train_cfg, device
@@ -220,7 +239,13 @@ def vary_rounds(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, devi
     for rounds in [10, 25, 50, 100]:
         print(f"\n=== Rounds: {rounds} ===")
         server, clients, val_ds = build_experiment(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device
+            all_domains,
+            val_queries_all,
+            model_cfg,
+            fl_cfg,
+            train_cfg,
+            device,
+            seed=fl_cfg["federated"]["seed"],
         )
         r = run_one_experiment(
             f"scale_rounds_{rounds}", server, clients, val_ds, fl_cfg, train_cfg, device,
