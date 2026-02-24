@@ -1,11 +1,92 @@
 # src/fl/run_federated_training.py
 
 import time
+import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Optional
 
 from src.evaluation.tracker import ExperimentTracker
 from src.evaluation.inference import evaluate_fl_model
 from src.fl.utils import select_federated_client_ids
+
+
+def _client_worker_main(client, in_queue, out_queue):
+    while True:
+        msg = in_queue.get()
+        if msg is None:
+            break
+        if msg.get("type") != "train":
+            continue
+
+        params = msg.get("params")
+        local_epochs = int(msg.get("local_epochs", 1))
+        seed = msg.get("seed")
+
+        if seed is not None:
+            try:
+                import torch
+
+                torch.manual_seed(seed)
+            except Exception:
+                pass
+
+        client.set_parameters(params)
+        loss_local = None
+        for _ in range(local_epochs):
+            loss_local = client.train_one_epoch()
+
+        out_queue.put(
+            {
+                "client_id": client.client_id,
+                "loss": loss_local,
+                "params": client.get_parameters(),
+                "size": len(client.dataset),
+            }
+        )
+
+
+class _ProcessClientPool:
+    def __init__(self, clients, ctx):
+        self._ctx = ctx
+        self._in_queues = {}
+        self._out_queues = {}
+        self._procs = {}
+
+        for client in clients:
+            in_q = ctx.Queue()
+            out_q = ctx.Queue()
+            proc = ctx.Process(
+                target=_client_worker_main,
+                args=(client, in_q, out_q),
+                daemon=True,
+            )
+            proc.start()
+            self._in_queues[client.client_id] = in_q
+            self._out_queues[client.client_id] = out_q
+            self._procs[client.client_id] = proc
+
+    def train_selected(self, selected_clients, global_params, local_epochs, seed=None):
+        for client in selected_clients:
+            self._in_queues[client.client_id].put(
+                {
+                    "type": "train",
+                    "params": global_params,
+                    "local_epochs": local_epochs,
+                    "seed": seed,
+                }
+            )
+
+        results = []
+        for client in selected_clients:
+            results.append(self._out_queues[client.client_id].get())
+
+        return results
+
+    def shutdown(self):
+        for in_q in self._in_queues.values():
+            in_q.put(None)
+        for proc in self._procs.values():
+            proc.join()
 
 
 def run_federated_training(
@@ -20,6 +101,9 @@ def run_federated_training(
     val_datasets: Optional[Dict] = None,
     eval_every: int = 5,
     device: str = "cpu",
+    parallel_clients: bool = False,
+    max_workers: Optional[int] = None,
+    parallel_backend: str = "thread",
 ):
     """
     Run federated training with tracking and periodic evaluation.
@@ -64,25 +148,67 @@ def run_federated_training(
     
     print()
     
+    parallel_backend = (parallel_backend or "thread").lower()
+    use_process_pool = parallel_clients and parallel_backend == "process" and len(clients) > 1
+    process_pool = None
+    if use_process_pool:
+        ctx = mp.get_context("spawn")
+        process_pool = _ProcessClientPool(clients, ctx)
+
     for r in range(rounds):
         round_start = time.time()
         print(f"--- Round {r+1}/{rounds} ---")
 
         global_params = server.get_global_parameters()
-        for client in selected_clients:
-            client.set_parameters(global_params)
+        if not use_process_pool:
+            for client in selected_clients:
+                client.set_parameters(global_params)
 
         client_params = []
         client_sizes = []
         client_losses = {}
-        
-        for client in selected_clients:
+
+        def train_client_local(client):
+            loss_local = None
             for _ in range(local_epochs):
-                loss = client.train_one_epoch()
-            print(f"  Client {client.client_id} loss: {loss:.4f}")
-            client_losses[client.client_id] = loss
-            client_params.append(client.get_parameters())
-            client_sizes.append(len(client.dataset))
+                loss_local = client.train_one_epoch()
+            params = client.get_parameters()
+            size = len(client.dataset)
+            return client.client_id, loss_local, params, size
+
+        if use_process_pool:
+            results = process_pool.train_selected(
+                selected_clients,
+                global_params,
+                local_epochs,
+                seed=seed,
+            )
+            for result in results:
+                client_id = result["client_id"]
+                loss = result["loss"]
+                params = result["params"]
+                size = result["size"]
+                print(f"  Client {client_id} loss: {loss:.4f}")
+                client_losses[client_id] = loss
+                client_params.append(params)
+                client_sizes.append(size)
+        elif parallel_clients and len(selected_clients) > 1:
+            worker_count = max_workers or len(selected_clients)
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [executor.submit(train_client_local, client) for client in selected_clients]
+                for future in as_completed(futures):
+                    client_id, loss, params, size = future.result()
+                    print(f"  Client {client_id} loss: {loss:.4f}")
+                    client_losses[client_id] = loss
+                    client_params.append(params)
+                    client_sizes.append(size)
+        else:
+            for client in selected_clients:
+                client_id, loss, params, size = train_client_local(client)
+                print(f"  Client {client_id} loss: {loss:.4f}")
+                client_losses[client_id] = loss
+                client_params.append(params)
+                client_sizes.append(size)
 
         server.aggregate(client_params, client_sizes)
         
@@ -115,5 +241,8 @@ def run_federated_training(
     # Final save
     if tracker:
         tracker.save()
+
+    if process_pool is not None:
+        process_pool.shutdown()
     
     return tracker

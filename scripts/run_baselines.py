@@ -78,6 +78,7 @@ def run_federated_mlp(train_queries, val_queries, num_aps, fl_cfg, train_cfg, de
     print("BASELINE: Federated MLP")
     print("=" * 60)
     from src.baselines.federated_mlp import run_federated_mlp as _run
+    parallel_cfg = fl_cfg.get("parallel", {})
     return _run(
         train_queries=train_queries,
         val_queries=val_queries,
@@ -89,6 +90,9 @@ def run_federated_mlp(train_queries, val_queries, num_aps, fl_cfg, train_cfg, de
         sampling_strategy=fl_cfg["federated"].get("sampling_strategy", "random"),
         seed=fl_cfg["federated"].get("seed", 42),
         device=device,
+        parallel_clients=bool(parallel_cfg.get("enabled", False)),
+        parallel_backend=parallel_cfg.get("backend", "thread"),
+        max_workers=parallel_cfg.get("max_workers", None),
     )
 
 

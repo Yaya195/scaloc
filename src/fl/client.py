@@ -17,7 +17,16 @@ class FLClient:
         self.dataset = dataset
         self.device = device
         self.use_amp = device.startswith("cuda") and torch.cuda.is_available()
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        if self.use_amp:
+            try:
+                self.scaler = torch.amp.GradScaler("cuda")
+            except AttributeError:
+                self.scaler = torch.cuda.amp.GradScaler(enabled=True)
+        else:
+            try:
+                self.scaler = torch.amp.GradScaler("cpu", enabled=False)
+            except AttributeError:
+                self.scaler = torch.cuda.amp.GradScaler(enabled=False)
         self._cached_rp_device = None
         self._cached_rp_ap_ids = None
         self._cached_rp_rssi = None

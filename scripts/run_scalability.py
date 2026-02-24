@@ -131,6 +131,7 @@ def run_one_experiment(
     num_clients_per_round = None
     seed = fl_cfg["federated"]["seed"]
     eval_every = train_cfg["logging"].get("eval_every", 5)
+    parallel_cfg = fl_cfg.get("parallel", {})
 
     tracker = ExperimentTracker(name, results_dir=str(RESULTS_DIR), config={
         "type": "scalability", "num_clients": len(clients),
@@ -143,6 +144,9 @@ def run_one_experiment(
         sampling_strategy="all", seed=seed,
         tracker=tracker, val_datasets=val_datasets if val_datasets else None,
         eval_every=eval_every, device=device,
+        parallel_clients=bool(parallel_cfg.get("enabled", False)),
+        max_workers=parallel_cfg.get("max_workers", None),
+        parallel_backend=parallel_cfg.get("backend", "thread"),
     )
     total_time = time.time() - t_start
 

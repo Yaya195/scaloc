@@ -9,7 +9,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
-from typing import Dict, List
+from typing import Dict, List, Optional
+import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.baselines.centralized_mlp import LocalizationMLP, prepare_data
 from src.data.normalization import (
@@ -20,6 +22,109 @@ from src.evaluation.metrics import compute_all_metrics
 from src.evaluation.tracker import ExperimentTracker
 from src.fl.utils import select_federated_client_ids
 from src.utils.device import resolve_device
+
+
+def _mlp_worker_main(
+    domain_id,
+    X_train,
+    y_train,
+    model_kwargs,
+    lr,
+    batch_size,
+    in_queue,
+    out_queue,
+):
+    model = LocalizationMLP(**model_kwargs)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    criterion = nn.MSELoss()
+
+    while True:
+        msg = in_queue.get()
+        if msg is None:
+            break
+        if msg.get("type") != "train":
+            continue
+
+        global_state = msg.get("state")
+        local_epochs = int(msg.get("local_epochs", 1))
+        seed = msg.get("seed")
+
+        if seed is not None:
+            try:
+                torch.manual_seed(seed)
+            except Exception:
+                pass
+
+        model.load_state_dict(global_state)
+        model.train()
+
+        ds = TensorDataset(X_train, y_train)
+        loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
+
+        loss_val = 0.0
+        for _ in range(local_epochs):
+            epoch_loss = 0.0
+            n = 0
+            for xb, yb in loader:
+                optimizer.zero_grad()
+                pred = model(xb)
+                loss = criterion(pred, yb)
+                loss.backward()
+                optimizer.step()
+                epoch_loss += loss.item()
+                n += 1
+            loss_val = epoch_loss / max(n, 1)
+
+        out_queue.put(
+            {
+                "domain_id": domain_id,
+                "loss": loss_val,
+                "state": {k: v.clone() for k, v in model.state_dict().items()},
+                "size": len(X_train),
+            }
+        )
+
+
+class _MLPProcessPool:
+    def __init__(self, domain_data, model_kwargs, lr, batch_size, ctx):
+        self._in_queues = {}
+        self._out_queues = {}
+        self._procs = {}
+
+        for domain_id, (X_train, y_train) in domain_data.items():
+            in_q = ctx.Queue()
+            out_q = ctx.Queue()
+            proc = ctx.Process(
+                target=_mlp_worker_main,
+                args=(domain_id, X_train, y_train, model_kwargs, lr, batch_size, in_q, out_q),
+                daemon=True,
+            )
+            proc.start()
+            self._in_queues[domain_id] = in_q
+            self._out_queues[domain_id] = out_q
+            self._procs[domain_id] = proc
+
+    def train_selected(self, selected_ids, global_state, local_epochs, seed=None):
+        for domain_id in selected_ids:
+            self._in_queues[domain_id].put(
+                {
+                    "type": "train",
+                    "state": global_state,
+                    "local_epochs": local_epochs,
+                    "seed": seed,
+                }
+            )
+
+        results = []
+        for domain_id in selected_ids:
+            results.append(self._out_queues[domain_id].get())
+        return results
+
+    def shutdown(self):
+        for in_q in self._in_queues.values():
+            in_q.put(None)
+        for proc in self._procs.values():
+            proc.join()
 
 
 def run_federated_mlp(
@@ -36,6 +141,9 @@ def run_federated_mlp(
     sampling_strategy: str = "random",
     seed: int = 42,
     device: str = "auto",
+    parallel_clients: bool = False,
+    parallel_backend: str = "thread",
+    max_workers: Optional[int] = None,
     experiment_name: str = "federated_mlp",
 ) -> Dict[str, dict]:
     """
@@ -50,6 +158,7 @@ def run_federated_mlp(
     global_model = LocalizationMLP(input_dim=num_aps, hidden_dim=hidden_dim, num_layers=num_layers).to(device)
     criterion = nn.MSELoss()
     domain_stats = fit_domain_normalization_stats(train_queries)
+    parallel_backend = (parallel_backend or "thread").lower()
 
     # Prepare per-domain data
     domain_data = {}
@@ -109,40 +218,107 @@ def run_federated_mlp(
             client_models[domain_id].parameters(), lr=lr
         )
 
+    use_process_pool = (
+        parallel_clients
+        and parallel_backend == "process"
+        and device == "cpu"
+        and len(selected_ids) > 1
+    )
+    process_pool = None
+    if use_process_pool:
+        ctx = mp.get_context("spawn")
+        model_kwargs = {
+            "input_dim": num_aps,
+            "hidden_dim": hidden_dim,
+            "num_layers": num_layers,
+        }
+        domain_data_cpu = {
+            d: (domain_data[d][0].cpu(), domain_data[d][1].cpu()) for d in selected_ids
+        }
+        process_pool = _MLPProcessPool(domain_data_cpu, model_kwargs, lr, batch_size, ctx)
+
     for r in range(rounds):
         client_states = []
         client_sizes = []
         client_losses = {}
 
-        for domain_id in selected_ids:
-            X_train, y_train = domain_data[domain_id]
-            
-            # Load global weights into local model (preserve optimizer state)
-            local_model = client_models[domain_id]
-            local_model.load_state_dict(global_model.state_dict())
-            optimizer = client_optimizers[domain_id]
-            
-            ds = TensorDataset(X_train, y_train)
-            loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
+        if use_process_pool:
+            results = process_pool.train_selected(
+                selected_ids,
+                global_model.state_dict(),
+                local_epochs,
+                seed=seed,
+            )
+            for result in results:
+                domain_id = result["domain_id"]
+                client_losses[domain_id] = result["loss"]
+                client_states.append(result["state"])
+                client_sizes.append(result["size"])
+        elif parallel_clients and len(selected_ids) > 1:
+            worker_count = max_workers or len(selected_ids)
 
-            local_model.train()
-            loss_val = 0.0
-            for _ in range(local_epochs):
-                epoch_loss = 0.0
-                n = 0
-                for xb, yb in loader:
-                    optimizer.zero_grad()
-                    pred = local_model(xb)
-                    loss = criterion(pred, yb)
-                    loss.backward()
-                    optimizer.step()
-                    epoch_loss += loss.item()
-                    n += 1
-                loss_val = epoch_loss / max(n, 1)
+            def train_one(domain_id):
+                X_train, y_train = domain_data[domain_id]
+                local_model = client_models[domain_id]
+                local_model.load_state_dict(global_model.state_dict())
+                optimizer = client_optimizers[domain_id]
 
-            client_losses[domain_id] = loss_val
-            client_states.append({k: v.clone() for k, v in local_model.state_dict().items()})
-            client_sizes.append(len(X_train))
+                ds = TensorDataset(X_train, y_train)
+                loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
+
+                local_model.train()
+                loss_val = 0.0
+                for _ in range(local_epochs):
+                    epoch_loss = 0.0
+                    n = 0
+                    for xb, yb in loader:
+                        optimizer.zero_grad()
+                        pred = local_model(xb)
+                        loss = criterion(pred, yb)
+                        loss.backward()
+                        optimizer.step()
+                        epoch_loss += loss.item()
+                        n += 1
+                    loss_val = epoch_loss / max(n, 1)
+
+                return domain_id, loss_val, {k: v.clone() for k, v in local_model.state_dict().items()}, len(X_train)
+
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [executor.submit(train_one, domain_id) for domain_id in selected_ids]
+                for future in as_completed(futures):
+                    domain_id, loss_val, state, size = future.result()
+                    client_losses[domain_id] = loss_val
+                    client_states.append(state)
+                    client_sizes.append(size)
+        else:
+            for domain_id in selected_ids:
+                X_train, y_train = domain_data[domain_id]
+
+                local_model = client_models[domain_id]
+                local_model.load_state_dict(global_model.state_dict())
+                optimizer = client_optimizers[domain_id]
+
+                ds = TensorDataset(X_train, y_train)
+                loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
+
+                local_model.train()
+                loss_val = 0.0
+                for _ in range(local_epochs):
+                    epoch_loss = 0.0
+                    n = 0
+                    for xb, yb in loader:
+                        optimizer.zero_grad()
+                        pred = local_model(xb)
+                        loss = criterion(pred, yb)
+                        loss.backward()
+                        optimizer.step()
+                        epoch_loss += loss.item()
+                        n += 1
+                    loss_val = epoch_loss / max(n, 1)
+
+                client_losses[domain_id] = loss_val
+                client_states.append({k: v.clone() for k, v in local_model.state_dict().items()})
+                client_sizes.append(len(X_train))
 
         # FedAvg aggregation
         total = sum(client_sizes)
@@ -178,6 +354,9 @@ def run_federated_mlp(
         tracker.log_round(r + 1, client_losses, eval_metrics)
 
     tracker.save()
+
+    if process_pool is not None:
+        process_pool.shutdown()
 
     # Final per-domain evaluation
     global_model.eval()

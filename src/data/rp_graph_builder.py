@@ -79,11 +79,14 @@ def build_domain_graph(
 
     # Encode each RP fingerprint with current encoder
     node_feats = []
-    for fp in rp_fingerprints:
-        ap_ids = torch.tensor(fp["ap_ids"], dtype=torch.long)
-        rssi = torch.tensor(fp["rssi"], dtype=torch.float).unsqueeze(-1)
-        z = encoder(ap_ids, rssi)  # (latent_dim,)
-        node_feats.append(z.detach().cpu().numpy())
+    encoder_device = next(encoder.parameters()).device
+    encoder.eval()
+    with torch.no_grad():
+        for fp in rp_fingerprints:
+            ap_ids = torch.tensor(fp["ap_ids"], dtype=torch.long, device=encoder_device)
+            rssi = torch.tensor(fp["rssi"], dtype=torch.float, device=encoder_device).unsqueeze(-1)
+            z = encoder(ap_ids, rssi)  # (latent_dim,)
+            node_feats.append(z.detach().cpu().numpy())
 
     x = np.stack(node_feats, axis=0)  # (N, latent_dim)
 

@@ -94,6 +94,10 @@ def main():
     num_clients_per_round = fl_cfg["federated"]["num_clients_per_round"]
     sampling_strategy = fl_cfg["federated"]["sampling_strategy"]
     seed = fl_cfg["federated"]["seed"]
+    parallel_cfg = fl_cfg.get("parallel", {})
+    parallel_clients = bool(parallel_cfg.get("enabled", False))
+    max_workers = parallel_cfg.get("max_workers", None)
+    parallel_backend = parallel_cfg.get("backend", "thread")
     
     lr = train_cfg["training"]["learning_rate"]
     device = resolve_device(train_cfg["training"].get("device", "auto"))
@@ -182,6 +186,9 @@ def main():
         val_datasets=val_datasets if val_datasets else None,
         eval_every=eval_every,
         device=device,
+        parallel_clients=parallel_clients,
+        max_workers=max_workers,
+        parallel_backend=parallel_backend,
     )
 
 
