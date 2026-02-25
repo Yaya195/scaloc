@@ -2,7 +2,6 @@
 
 import torch
 import torch.nn as nn
-from contextlib import nullcontext
 
 
 class FLClient:
@@ -16,17 +15,6 @@ class FLClient:
         self.encoder = encoder.to(device)
         self.dataset = dataset
         self.device = device
-        self.use_amp = device.startswith("cuda") and torch.cuda.is_available()
-        if self.use_amp:
-            try:
-                self.scaler = torch.amp.GradScaler("cuda")
-            except AttributeError:
-                self.scaler = torch.cuda.amp.GradScaler(enabled=True)
-        else:
-            try:
-                self.scaler = torch.amp.GradScaler("cpu", enabled=False)
-            except AttributeError:
-                self.scaler = torch.cuda.amp.GradScaler(enabled=False)
         self._cached_rp_device = None
         self._cached_rp_ap_ids = None
         self._cached_rp_rssi = None
@@ -101,41 +89,34 @@ class FLClient:
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            autocast_ctx = (
-                torch.autocast(device_type="cuda", dtype=torch.float16)
-                if self.use_amp
-                else nullcontext()
+            rp_feats = self.encoder.encode_packed(
+                self._cached_rp_ap_ids,
+                self._cached_rp_rssi,
+                self._cached_rp_mask,
             )
-            with autocast_ctx:
-                rp_feats = self.encoder.encode_packed(
-                    self._cached_rp_ap_ids,
-                    self._cached_rp_rssi,
-                    self._cached_rp_mask,
-                )
 
-                graph.x = rp_feats
+            graph.x = rp_feats
 
-                z_q = self.encoder(ap_ids, rssi)
-                if not torch.isfinite(z_q).all():
-                    print(f"  WARNING: Non-finite encoder output for client {self.client_id}")
-                    print(f"    AP count: {len(ap_ids)}")
-                    continue
+            z_q = self.encoder(ap_ids, rssi)
+            if not torch.isfinite(z_q).all():
+                print(f"  WARNING: Non-finite encoder output for client {self.client_id}")
+                print(f"    AP count: {len(ap_ids)}")
+                continue
 
-                p_hat, _ = self.model(graph, z_q)
+            p_hat, _ = self.model(graph, z_q)
 
-                if not torch.isfinite(p_hat).all():
-                    print(f"  WARNING: Non-finite model output for client {self.client_id}")
-                    continue
+            if not torch.isfinite(p_hat).all():
+                print(f"  WARNING: Non-finite model output for client {self.client_id}")
+                continue
 
-                loss = self.criterion(p_hat, true_pos)
+            loss = self.criterion(p_hat, true_pos)
 
-                if not torch.isfinite(loss):
-                    print(f"  WARNING: Non-finite loss for client {self.client_id}")
-                    print(f"    p_hat: {p_hat}, true_pos: {true_pos}")
-                    continue
+            if not torch.isfinite(loss):
+                print(f"  WARNING: Non-finite loss for client {self.client_id}")
+                print(f"    p_hat: {p_hat}, true_pos: {true_pos}")
+                continue
 
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
+            loss.backward()
 
             grad_finite = True
             for param in list(self.model.parameters()) + list(self.encoder.parameters()):
@@ -145,15 +126,13 @@ class FLClient:
             if not grad_finite:
                 print(f"  WARNING: Non-finite gradients for client {self.client_id}; skipping optimizer step")
                 self.optimizer.zero_grad(set_to_none=True)
-                self.scaler.update()
                 continue
 
             torch.nn.utils.clip_grad_norm_(
                 list(self.model.parameters()) + list(self.encoder.parameters()),
                 max_norm=1.0,
             )
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+            self.optimizer.step()
 
             total_loss += loss.item()
             num_batches += 1
