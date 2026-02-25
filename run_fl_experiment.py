@@ -87,6 +87,8 @@ def main():
     ap_emb_dim = model_cfg["encoder"]["ap_emb_dim"]
     pooling = model_cfg["encoder"]["pooling"]
     arch = model_cfg["gnn"]["arch"]
+    gnn_hidden_dim = model_cfg["gnn"]["hidden_dim"]
+    gnn_layers = model_cfg["gnn"]["num_layers"]
     
     rounds = fl_cfg["federated"]["rounds"]
     local_epochs = fl_cfg["federated"]["local_epochs"]
@@ -105,7 +107,12 @@ def main():
 
     # Create global model and encoder for the server
     encoder_global = APWiseEncoder(num_aps=num_aps, latent_dim=latent_dim, ap_emb_dim=ap_emb_dim, pooling=pooling)
-    model_global = FLIndoorModel(latent_dim=latent_dim, arch=arch)
+    model_global = FLIndoorModel(
+        latent_dim=latent_dim,
+        arch=arch,
+        hidden_dim=gnn_hidden_dim,
+        num_layers=gnn_layers,
+    )
 
     server = FLServer(global_model=model_global, global_encoder=encoder_global)
 

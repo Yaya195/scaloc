@@ -55,11 +55,18 @@ def build_experiment(
     ap_emb_dim = model_cfg["encoder"]["ap_emb_dim"]
     pooling = model_cfg["encoder"]["pooling"]
     arch = model_cfg["gnn"]["arch"]
+    gnn_hidden_dim = model_cfg["gnn"]["hidden_dim"]
+    gnn_layers = model_cfg["gnn"]["num_layers"]
     lr = train_cfg["training"]["learning_rate"]
 
     encoder = APWiseEncoder(num_aps=num_aps, latent_dim=latent_dim,
                             ap_emb_dim=ap_emb_dim, pooling=pooling)
-    model = FLIndoorModel(latent_dim=latent_dim, arch=arch)
+    model = FLIndoorModel(
+        latent_dim=latent_dim,
+        arch=arch,
+        hidden_dim=gnn_hidden_dim,
+        num_layers=gnn_layers,
+    )
     server = FLServer(global_model=model, global_encoder=encoder)
 
     clients = []

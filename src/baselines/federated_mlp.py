@@ -14,6 +14,8 @@ from typing import Dict, List, Optional
 import multiprocessing as mp
 from queue import Empty
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+import sys
 
 from src.baselines.centralized_mlp import LocalizationMLP, prepare_data
 from src.data.normalization import (
@@ -24,6 +26,11 @@ from src.evaluation.metrics import compute_all_metrics
 from src.evaluation.tracker import ExperimentTracker
 from src.fl.utils import select_federated_client_ids
 from src.utils.device import resolve_device
+
+CONFIGS_DIR = Path(__file__).resolve().parents[2] / "configs"
+if str(CONFIGS_DIR) not in sys.path:
+    sys.path.insert(0, str(CONFIGS_DIR))
+from load_config import load_config
 
 
 def _client_seed(base_seed, client_id: str):
@@ -155,13 +162,14 @@ class _MLPProcessPool:
 def run_federated_mlp(
     train_queries: Dict[str, List[dict]],
     val_queries: Dict[str, List[dict]],
-    num_aps: int = 520,
-    hidden_dim: int = 256,
-    num_layers: int = 3,
+    num_aps: int = None,
+    hidden_dim: int = None,
+    num_layers: int = None,
+    dropout: float = None,
     rounds: int = 50,
     local_epochs: int = 1,
     lr: float = 1e-3,
-    batch_size: int = 64,
+    batch_size: int = None,
     num_clients_per_round: int = None,
     sampling_strategy: str = "random",
     seed: int = 42,
@@ -169,6 +177,7 @@ def run_federated_mlp(
     parallel_clients: bool = False,
     parallel_backend: str = "thread",
     max_workers: Optional[int] = None,
+    eval_every: int = 5,
     experiment_name: str = "federated_mlp",
 ) -> Dict[str, dict]:
     """
@@ -180,7 +189,27 @@ def run_federated_mlp(
         {domain_id: metrics_dict, "global": metrics_dict}
     """
     device = resolve_device(device)
-    global_model = LocalizationMLP(input_dim=num_aps, hidden_dim=hidden_dim, num_layers=num_layers).to(device)
+    model_cfg = load_config("model_config")
+    train_cfg = load_config("train_config")
+    baseline_cfg = model_cfg.get("baselines", {})
+
+    if num_aps is None:
+        num_aps = int(model_cfg["encoder"]["num_aps"]) - 1
+    if hidden_dim is None:
+        hidden_dim = int(baseline_cfg.get("mlp_hidden_dim", model_cfg["gnn"]["hidden_dim"]))
+    if num_layers is None:
+        num_layers = int(baseline_cfg.get("mlp_num_layers", model_cfg["gnn"]["num_layers"]))
+    if dropout is None:
+        dropout = float(baseline_cfg.get("mlp_dropout", model_cfg["encoder"].get("dropout", 0.2)))
+    if batch_size is None:
+        batch_size = int(train_cfg["training"].get("batch_size", 128))
+
+    global_model = LocalizationMLP(
+        input_dim=num_aps,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        dropout=dropout,
+    ).to(device)
     criterion = nn.MSELoss()
     domain_stats = fit_domain_normalization_stats(train_queries)
     parallel_backend = (parallel_backend or "thread").lower()
@@ -260,6 +289,7 @@ def run_federated_mlp(
             "input_dim": num_aps,
             "hidden_dim": hidden_dim,
             "num_layers": num_layers,
+            "dropout": dropout,
         }
         domain_data_cpu = {
             d: (domain_data[d][0].cpu(), domain_data[d][1].cpu()) for d in selected_ids
@@ -436,7 +466,7 @@ def run_federated_mlp(
 
         # Eval periodically
         eval_metrics = None
-        if (r + 1) % 5 == 0 or r == 0 or r == rounds - 1:
+        if (r + 1) % eval_every == 0 or r == 0 or r == rounds - 1:
             global_model.eval()
             all_preds, all_truths = [], []
             for domain_id, (X_v, _y_v_norm, y_v_raw) in val_data.items():

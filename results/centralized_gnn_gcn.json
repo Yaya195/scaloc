@@ -1,0 +1,89 @@
+{
+  "experiment_name": "centralized_gnn_gcn",
+  "config": {
+    "type": "centralized_gnn",
+    "epochs": 50,
+    "arch": "gcn",
+    "latent_dim": 64,
+    "hidden_dim": 128
+  },
+  "start_time": "2026-02-24 21:31:48",
+  "rounds": [
+    {
+      "round": 1,
+      "client_losses": {
+        "centralized": 0.009662185987665535
+      },
+      "avg_loss": 0.009662185987665535,
+      "eval_metrics": {
+        "mean_error": 16.966222763061523,
+        "median_error": 13.838150978088379,
+        "p75_error": 21.40408229827881,
+        "p90_error": 30.682352828979496,
+        "rmse": 21.30951690673828,
+        "cep_5m": 0.09010989010989011,
+        "cep_10m": 0.3252747252747253,
+        "max_error": 86.88018035888672,
+        "std_error": 12.893518447875977
+      },
+      "round_time_sec": null
+    },
+    {
+      "round": 2,
+      "client_losses": {
+        "centralized": 0.004085777275886913
+      },
+      "avg_loss": 0.004085777275886913,
+      "eval_metrics": {},
+      "round_time_sec": null
+    },
+    {
+      "round": 3,
+      "client_losses": {
+        "centralized": 0.0026666786010873947
+      },
+      "avg_loss": 0.0026666786010873947,
+      "eval_metrics": {},
+      "round_time_sec": null
+    },
+    {
+      "round": 4,
+      "client_losses": {
+        "centralized": 0.0023230798339389136
+      },
+      "avg_loss": 0.0023230798339389136,
+      "eval_metrics": {},
+      "round_time_sec": null
+    },
+    {
+      "round": 5,
+      "client_losses": {
+        "centralized": 0.002172103571005406
+      },
+      "avg_loss": 0.002172103571005406,
+      "eval_metrics": {
+        "mean_error": 10.091209411621094,
+        "median_error": 7.242924213409424,
+        "p75_error": 11.51586627960205,
+        "p90_error": 18.247343444824224,
+        "rmse": 15.302009582519531,
+        "cep_5m": 0.3252747252747253,
+        "cep_10m": 0.6637362637362637,
+        "max_error": 88.31341552734375,
+        "std_error": 11.502999305725098
+      },
+      "round_time_sec": null
+    },
+    {
+      "round": 6,
+      "client_losses": {
+        "centralized": 0.0019643200833583336
+      },
+      "avg_loss": 0.0019643200833583336,
+      "eval_metrics": {},
+      "round_time_sec": null
+    }
+  ],
+  "last_update": "2026-02-24 22:02:27",
+  "total_rounds": 6
+}

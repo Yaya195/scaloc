@@ -1,6 +1,6 @@
 federated:
   algorithm: fedavg
-  rounds: 50
+  rounds: 2
   local_epochs: 1
   client_fraction: 1.0
   min_clients: 2

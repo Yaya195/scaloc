@@ -17,7 +17,18 @@ from src.data.normalization import (
 from src.evaluation.metrics import compute_all_metrics
 
 
-def build_rssi_vector(aps: List[dict], num_aps: int = 520) -> np.ndarray:
+def _infer_num_aps(train_queries: Dict[str, List[dict]], val_queries: Dict[str, List[dict]]) -> int:
+    max_ap_id = 0
+    for domain_queries in list(train_queries.values()) + list(val_queries.values()):
+        for q in domain_queries:
+            for ap_id in q.get("ap_ids", []):
+                if isinstance(ap_id, str):
+                    ap_id = int(ap_id.replace("WAP", ""))
+                max_ap_id = max(max_ap_id, int(ap_id))
+    return max_ap_id if max_ap_id > 0 else 520
+
+
+def build_rssi_vector(aps: List[dict], num_aps: int) -> np.ndarray:
     """Convert AP-wise fingerprint to fixed-length RSSI vector."""
     vec = np.full(num_aps, -110.0)  # default = very weak
     for ap in aps:
@@ -33,7 +44,7 @@ def run_knn_baseline(
     train_queries: Dict[str, List[dict]],
     val_queries: Dict[str, List[dict]],
     k: int = 5,
-    num_aps: int = 520,
+    num_aps: int = None,
     weighted: bool = True,
 ) -> Dict[str, dict]:
     """
@@ -53,6 +64,9 @@ def run_knn_baseline(
     all_truths = []
     results = {}
     domain_stats = fit_domain_normalization_stats(train_queries)
+
+    if num_aps is None:
+        num_aps = _infer_num_aps(train_queries, val_queries)
 
     for domain_id, val_qs in val_queries.items():
         train_qs = train_queries.get(domain_id, [])
@@ -95,7 +109,7 @@ def run_knn_baseline(
     return results
 
 
-def build_rssi_vector_from_query(query: dict, num_aps: int = 520) -> np.ndarray:
+def build_rssi_vector_from_query(query: dict, num_aps: int) -> np.ndarray:
     """Convert a query dict {ap_ids, rssi, pos} to RSSI vector."""
     vec = np.full(num_aps, -110.0)
     for ap_id, rssi in zip(query["ap_ids"], query["rssi"]):

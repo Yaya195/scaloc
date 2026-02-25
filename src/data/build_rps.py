@@ -2,10 +2,16 @@
 
 from pathlib import Path
 from typing import List
+import sys
 
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
+
+CONFIGS_DIR = Path(__file__).resolve().parents[2] / "configs"
+if str(CONFIGS_DIR) not in sys.path:
+    sys.path.insert(0, str(CONFIGS_DIR))
+from load_config import load_config
 
 DOMAINS_DIR = Path("data/interim/domains")
 RPS_DIR = Path("data/processed/rps")
@@ -46,20 +52,27 @@ def encode_rp_fingerprints(samples: pd.DataFrame):
     return ap_ids, rssi_vals
 
 
-def adaptive_num_rps(n_unique_positions: int, n_spaces: int) -> int:
-    n = int(round(0.5 * np.sqrt(n_unique_positions) * np.log1p(n_spaces)))
-    return max(5, n)
+def adaptive_num_rps(
+    n_unique_positions: int,
+    n_spaces: int,
+    scale_factor: float,
+    min_rps: int,
+) -> int:
+    if n_unique_positions <= 0:
+        return 0
+    k_raw = int(round(scale_factor * np.sqrt(n_unique_positions) * np.log1p(n_spaces)))
+    # Keep both practical constraints: at least min_rps where possible, and never exceed n_unique.
+    return min(n_unique_positions, max(min_rps, k_raw))
 
 
-def build_rps_for_domain(domain_path: Path) -> pd.DataFrame:
+def build_rps_for_domain(domain_path: Path, scale_factor: float, min_rps: int) -> pd.DataFrame:
     df = pd.read_parquet(domain_path)
 
     unique_positions = df[["x", "y"]].drop_duplicates().reset_index(drop=True)
     n_unique = len(unique_positions)
     n_spaces = df["space_id"].nunique()
 
-    k = adaptive_num_rps(n_unique, n_spaces)
-    k = min(k, n_unique)
+    k = adaptive_num_rps(n_unique, n_spaces, scale_factor=scale_factor, min_rps=min_rps)
 
     km = KMeans(n_clusters=k, random_state=0)
     labels_unique = km.fit_predict(unique_positions[["x", "y"]])
@@ -90,8 +103,17 @@ def build_rps_for_domain(domain_path: Path) -> pd.DataFrame:
 
 
 def main():
+    data_cfg = load_config("data_config")
+    rp_cfg = data_cfg.get("reference_points", {})
+    scale_factor = float(rp_cfg.get("adaptive_scale", 0.5))
+    min_rps = int(rp_cfg.get("min_rps", 5))
+
     for domain_path in list_train_domains():
-        rps_df = build_rps_for_domain(domain_path)
+        rps_df = build_rps_for_domain(
+            domain_path,
+            scale_factor=scale_factor,
+            min_rps=min_rps,
+        )
         domain_id = domain_path.stem.replace("train_domain_", "")
         out_path = RPS_DIR / f"train_rps_{domain_id}.parquet"
         rps_df.to_parquet(out_path, index=False)

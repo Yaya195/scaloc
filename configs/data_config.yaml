@@ -12,5 +12,7 @@ preprocess:
   
 reference_points:
   clustering: kmeans
+  adaptive_scale: 0.5
+  min_rps: 5
   n_clusters: 200
   min_samples_per_rp: 5

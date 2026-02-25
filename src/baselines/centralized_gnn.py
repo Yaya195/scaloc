@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import sys
 from pathlib import Path
 from torch.utils.data import DataLoader
 
@@ -22,17 +23,22 @@ from src.evaluation.metrics import compute_all_metrics
 from src.evaluation.tracker import ExperimentTracker
 from src.utils.device import resolve_device
 
+CONFIGS_DIR = Path(__file__).resolve().parents[2] / "configs"
+if str(CONFIGS_DIR) not in sys.path:
+    sys.path.insert(0, str(CONFIGS_DIR))
+from load_config import load_config
+
 
 def run_centralized_gnn(
     rps_dir: str = "data/processed/rps",
     samples_dir: str = "data/processed/samples",
-    num_aps: int = 521,
-    latent_dim: int = 64,
-    ap_emb_dim: int = 32,
-    pooling: str = "attention",
-    arch: str = "sage",
-    hidden_dim: int = 64,
-    gnn_layers: int = 3,
+    num_aps: int = None,
+    latent_dim: int = None,
+    ap_emb_dim: int = None,
+    pooling: str = None,
+    arch: str = None,
+    hidden_dim: int = None,
+    gnn_layers: int = None,
     epochs: int = 50,
     lr: float = 5e-4,
     device: str = "auto",
@@ -53,6 +59,22 @@ def run_centralized_gnn(
     rps_dir = Path(rps_dir)
     samples_dir = Path(samples_dir)
     allowed_set = set(allowed_domains) if allowed_domains is not None else None
+
+    model_cfg = load_config("model_config")
+    if num_aps is None:
+        num_aps = int(model_cfg["encoder"]["num_aps"])
+    if latent_dim is None:
+        latent_dim = int(model_cfg["encoder"]["latent_dim"])
+    if ap_emb_dim is None:
+        ap_emb_dim = int(model_cfg["encoder"]["ap_emb_dim"])
+    if pooling is None:
+        pooling = str(model_cfg["encoder"]["pooling"])
+    if arch is None:
+        arch = str(model_cfg["gnn"]["arch"])
+    if hidden_dim is None:
+        hidden_dim = int(model_cfg["gnn"]["hidden_dim"])
+    if gnn_layers is None:
+        gnn_layers = int(model_cfg["gnn"]["num_layers"])
 
     # --- Create model + encoder ---
     encoder = APWiseEncoder(

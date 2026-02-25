@@ -48,11 +48,13 @@ def run_knn(train_queries, val_queries, num_aps):
     print("BASELINE: k-NN Fingerprinting")
     print("=" * 60)
     from src.baselines.knn_baseline import run_knn_baseline
+    model_cfg = load_config("model_config")
+    baseline_cfg = model_cfg.get("baselines", {})
     return run_knn_baseline(
         train_queries=train_queries,
         val_queries=val_queries,
         num_aps=num_aps,
-        k=5,
+        k=int(baseline_cfg.get("knn_k", 5)),
     )
 
 
@@ -62,12 +64,19 @@ def run_centralized_mlp(train_queries, val_queries, num_aps, device, train_cfg, 
     print("BASELINE: Centralized MLP")
     print("=" * 60)
     from src.baselines.centralized_mlp import run_centralized_mlp as _run
+    model_cfg = load_config("model_config")
+    baseline_cfg = model_cfg.get("baselines", {})
     return _run(
         train_queries=train_queries,
         val_queries=val_queries,
         num_aps=num_aps,
+        hidden_dim=int(baseline_cfg.get("mlp_hidden_dim", model_cfg["gnn"]["hidden_dim"])),
+        num_layers=int(baseline_cfg.get("mlp_num_layers", model_cfg["gnn"]["num_layers"])),
+        dropout=float(baseline_cfg.get("mlp_dropout", model_cfg["encoder"].get("dropout", 0.2))),
         epochs=fl_cfg["federated"]["rounds"] * fl_cfg["federated"]["local_epochs"],  # total epochs across all rounds
         lr=float(train_cfg["training"]["learning_rate"]),
+        batch_size=int(train_cfg["training"].get("batch_size", 128)),
+        eval_every=int(train_cfg["logging"].get("eval_every", 5)),
         device=device,
     )
 
@@ -79,16 +88,23 @@ def run_federated_mlp(train_queries, val_queries, num_aps, fl_cfg, train_cfg, de
     print("=" * 60)
     from src.baselines.federated_mlp import run_federated_mlp as _run
     parallel_cfg = fl_cfg.get("parallel", {})
+    model_cfg = load_config("model_config")
+    baseline_cfg = model_cfg.get("baselines", {})
     return _run(
         train_queries=train_queries,
         val_queries=val_queries,
         num_aps=num_aps,
+        hidden_dim=int(baseline_cfg.get("mlp_hidden_dim", model_cfg["gnn"]["hidden_dim"])),
+        num_layers=int(baseline_cfg.get("mlp_num_layers", model_cfg["gnn"]["num_layers"])),
+        dropout=float(baseline_cfg.get("mlp_dropout", model_cfg["encoder"].get("dropout", 0.2))),
         rounds=fl_cfg["federated"]["rounds"],
         local_epochs=fl_cfg["federated"]["local_epochs"],  # same as FedGNN
         lr=float(train_cfg["training"]["learning_rate"]),
+        batch_size=int(train_cfg["training"].get("batch_size", 128)),
         num_clients_per_round=fl_cfg["federated"].get("num_clients_per_round"),
         sampling_strategy=fl_cfg["federated"].get("sampling_strategy", "random"),
         seed=fl_cfg["federated"].get("seed", 42),
+        eval_every=int(train_cfg["logging"].get("eval_every", 5)),
         device=device,
         parallel_clients=bool(parallel_cfg.get("enabled", False)),
         parallel_backend=parallel_cfg.get("backend", "thread"),
@@ -108,8 +124,11 @@ def run_centralized_gnn(model_cfg, train_cfg, device, allowed_domains, fl_cfg):
         ap_emb_dim=model_cfg["encoder"]["ap_emb_dim"],
         pooling=model_cfg["encoder"]["pooling"],
         arch=model_cfg["gnn"]["arch"],
+        hidden_dim=model_cfg["gnn"]["hidden_dim"],
+        gnn_layers=model_cfg["gnn"]["num_layers"],
         epochs=fl_cfg["federated"]["rounds"] * fl_cfg["federated"]["local_epochs"],  # total epochs across all rounds
         lr=float(train_cfg["training"]["learning_rate"]),
+        eval_every=int(train_cfg["logging"].get("eval_every", 5)),
         device=device,
         allowed_domains=allowed_domains,
     )
@@ -124,9 +143,9 @@ def main():
     device = resolve_device(train_cfg["training"].get("device", "auto"))
     print(f"[device] Using {device}")
 
-    # num_aps for RSSI vector length: APs are 1-520, so vector length = 520
-    # (model_config.num_aps=521 is embedding table size, not vector length)
-    num_aps_vector = 520
+    # AP IDs are 1..(num_aps-1), while 0 is reserved padding for embeddings.
+    # MLP/kNN vector length must match the observable AP ID range.
+    num_aps_vector = int(model_cfg["encoder"]["num_aps"]) - 1
     train_queries, val_queries = load_all_data()
 
     common_domains = sorted(

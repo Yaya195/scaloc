@@ -9,6 +9,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 from typing import Dict, List
+from pathlib import Path
+import sys
 
 from src.baselines.knn_baseline import build_rssi_vector_from_query
 from src.data.normalization import (
@@ -21,11 +23,26 @@ from src.evaluation.metrics import compute_all_metrics
 from src.evaluation.tracker import ExperimentTracker
 from src.utils.device import resolve_device
 
+CONFIGS_DIR = Path(__file__).resolve().parents[2] / "configs"
+if str(CONFIGS_DIR) not in sys.path:
+    sys.path.insert(0, str(CONFIGS_DIR))
+from load_config import load_config
+
+
+def _infer_num_aps_from_queries(queries: List[dict]) -> int:
+    max_ap_id = 0
+    for q in queries:
+        for ap_id in q.get("ap_ids", []):
+            if isinstance(ap_id, str):
+                ap_id = int(ap_id.replace("WAP", ""))
+            max_ap_id = max(max_ap_id, int(ap_id))
+    return max_ap_id if max_ap_id > 0 else 1
+
 
 class LocalizationMLP(nn.Module):
     """Simple MLP for WiFi fingerprint localization."""
 
-    def __init__(self, input_dim: int = 520, hidden_dim: int = 256, num_layers: int = 3, dropout: float = 0.2):
+    def __init__(self, input_dim: int, hidden_dim: int, num_layers: int, dropout: float):
         super().__init__()
         layers = []
         layers.append(nn.Linear(input_dim, hidden_dim))
@@ -44,13 +61,16 @@ class LocalizationMLP(nn.Module):
 
 def prepare_data(
     queries: List[dict],
-    num_aps: int = 520,
+    num_aps: int = None,
     rssi_min: float = None,
     rssi_max: float = None,
     coord_min: np.ndarray = None,
     coord_max: np.ndarray = None,
 ):
     """Convert list of query dicts to (X, y) tensors, with optional normalization."""
+    if num_aps is None:
+        num_aps = _infer_num_aps_from_queries(queries)
+
     X = np.array([build_rssi_vector_from_query(q, num_aps) for q in queries], dtype=np.float32)
     y = np.array([q["pos"] for q in queries], dtype=np.float32)
 
@@ -65,12 +85,14 @@ def prepare_data(
 def run_centralized_mlp(
     train_queries: Dict[str, List[dict]],
     val_queries: Dict[str, List[dict]],
-    num_aps: int = 520,
-    hidden_dim: int = 256,
-    num_layers: int = 3,
+    num_aps: int = None,
+    hidden_dim: int = None,
+    num_layers: int = None,
+    dropout: float = None,
     epochs: int = 50,
     lr: float = 1e-3,
-    batch_size: int = 64,
+    batch_size: int = None,
+    eval_every: int = None,
     device: str = "auto",
     experiment_name: str = "centralized_mlp",
 ) -> Dict[str, dict]:
@@ -81,6 +103,22 @@ def run_centralized_mlp(
         {domain_id: metrics_dict, "global": metrics_dict}
     """
     device = resolve_device(device)
+    model_cfg = load_config("model_config")
+    train_cfg = load_config("train_config")
+    baseline_cfg = model_cfg.get("baselines", {})
+
+    if num_aps is None:
+        num_aps = int(model_cfg["encoder"]["num_aps"]) - 1
+    if hidden_dim is None:
+        hidden_dim = int(baseline_cfg.get("mlp_hidden_dim", model_cfg["gnn"]["hidden_dim"]))
+    if num_layers is None:
+        num_layers = int(baseline_cfg.get("mlp_num_layers", model_cfg["gnn"]["num_layers"]))
+    if dropout is None:
+        dropout = float(baseline_cfg.get("mlp_dropout", model_cfg["encoder"].get("dropout", 0.2)))
+    if batch_size is None:
+        batch_size = int(train_cfg["training"].get("batch_size", 128))
+    if eval_every is None:
+        eval_every = int(train_cfg["logging"].get("eval_every", 5))
 
     global_stats = fit_global_normalization_stats(train_queries)
 
@@ -125,7 +163,12 @@ def run_centralized_mlp(
     
     X_train, y_train = X_train.to(device), y_train.to(device)
 
-    model = LocalizationMLP(input_dim=num_aps, hidden_dim=hidden_dim, num_layers=num_layers).to(device)
+    model = LocalizationMLP(
+        input_dim=num_aps,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        dropout=dropout,
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
 
@@ -156,7 +199,7 @@ def run_centralized_mlp(
         
         # Eval periodically
         eval_metrics = None
-        if (epoch + 1) % 10 == 0 or epoch == 0 or epoch == epochs - 1:
+        if (epoch + 1) % eval_every == 0 or epoch == 0 or epoch == epochs - 1:
             model.eval()
             all_preds = []
             all_truths = []
