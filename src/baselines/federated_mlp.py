@@ -5,12 +5,14 @@
 # with each domain as a separate client. No GNN, no graphs.
 
 import copy
+import math
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 from typing import Dict, List, Optional
 import multiprocessing as mp
+from queue import Empty
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.baselines.centralized_mlp import LocalizationMLP, prepare_data
@@ -22,6 +24,13 @@ from src.evaluation.metrics import compute_all_metrics
 from src.evaluation.tracker import ExperimentTracker
 from src.fl.utils import select_federated_client_ids
 from src.utils.device import resolve_device
+
+
+def _client_seed(base_seed, client_id: str):
+    if base_seed is None:
+        return None
+    offset = sum((idx + 1) * ord(ch) for idx, ch in enumerate(str(client_id)))
+    return int(base_seed) + int(offset)
 
 
 def _mlp_worker_main(
@@ -55,34 +64,42 @@ def _mlp_worker_main(
             except Exception:
                 pass
 
-        model.load_state_dict(global_state)
-        model.train()
+        try:
+            model.load_state_dict(global_state)
+            model.train()
 
-        ds = TensorDataset(X_train, y_train)
-        loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
+            ds = TensorDataset(X_train, y_train)
+            loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
 
-        loss_val = 0.0
-        for _ in range(local_epochs):
-            epoch_loss = 0.0
-            n = 0
-            for xb, yb in loader:
-                optimizer.zero_grad()
-                pred = model(xb)
-                loss = criterion(pred, yb)
-                loss.backward()
-                optimizer.step()
-                epoch_loss += loss.item()
-                n += 1
-            loss_val = epoch_loss / max(n, 1)
+            loss_val = 0.0
+            for _ in range(local_epochs):
+                epoch_loss = 0.0
+                n = 0
+                for xb, yb in loader:
+                    optimizer.zero_grad()
+                    pred = model(xb)
+                    loss = criterion(pred, yb)
+                    loss.backward()
+                    optimizer.step()
+                    epoch_loss += loss.item()
+                    n += 1
+                loss_val = epoch_loss / max(n, 1)
 
-        out_queue.put(
-            {
-                "domain_id": domain_id,
-                "loss": loss_val,
-                "state": {k: v.clone() for k, v in model.state_dict().items()},
-                "size": len(X_train),
-            }
-        )
+            out_queue.put(
+                {
+                    "domain_id": domain_id,
+                    "loss": loss_val,
+                    "state": {k: v.clone() for k, v in model.state_dict().items()},
+                    "size": len(X_train),
+                }
+            )
+        except Exception as exc:
+            out_queue.put(
+                {
+                    "domain_id": domain_id,
+                    "error": repr(exc),
+                }
+            )
 
 
 class _MLPProcessPool:
@@ -106,18 +123,26 @@ class _MLPProcessPool:
 
     def train_selected(self, selected_ids, global_state, local_epochs, seed=None):
         for domain_id in selected_ids:
+            domain_seed = _client_seed(seed, domain_id)
             self._in_queues[domain_id].put(
                 {
                     "type": "train",
                     "state": global_state,
                     "local_epochs": local_epochs,
-                    "seed": seed,
+                    "seed": domain_seed,
                 }
             )
 
         results = []
         for domain_id in selected_ids:
-            results.append(self._out_queues[domain_id].get())
+            try:
+                results.append(self._out_queues[domain_id].get(timeout=1800))
+            except Empty:
+                proc = self._procs.get(domain_id)
+                alive = bool(proc is not None and proc.is_alive())
+                raise RuntimeError(
+                    f"Timeout waiting for federated_mlp worker {domain_id} (alive={alive})"
+                )
         return results
 
     def shutdown(self):
@@ -159,6 +184,10 @@ def run_federated_mlp(
     criterion = nn.MSELoss()
     domain_stats = fit_domain_normalization_stats(train_queries)
     parallel_backend = (parallel_backend or "thread").lower()
+
+    if parallel_clients and str(device).startswith("cuda"):
+        print("  Federated MLP: CUDA detected, disabling parallel clients for stability.")
+        parallel_clients = False
 
     # Prepare per-domain data
     domain_data = {}
@@ -238,26 +267,80 @@ def run_federated_mlp(
         process_pool = _MLPProcessPool(domain_data_cpu, model_kwargs, lr, batch_size, ctx)
 
     for r in range(rounds):
+        round_seed = (seed + r) if seed is not None else None
         client_states = []
         client_sizes = []
         client_losses = {}
+        client_update_ids = []
 
         if use_process_pool:
-            results = process_pool.train_selected(
-                selected_ids,
-                global_model.state_dict(),
-                local_epochs,
-                seed=seed,
-            )
+            process_failed = False
+            try:
+                results = process_pool.train_selected(
+                    selected_ids,
+                    global_model.state_dict(),
+                    local_epochs,
+                    seed=round_seed,
+                )
+            except Exception as exc:
+                print(f"  Federated MLP process backend failed: {exc}. Falling back to serial this round.")
+                results = []
+                process_failed = True
+                use_process_pool = False
             for result in results:
                 domain_id = result["domain_id"]
+                if "error" in result:
+                    print(f"  Client {domain_id} failed in process worker: {result['error']}")
+                    continue
+                if not math.isfinite(float(result["loss"])):
+                    print(f"  Client {domain_id} produced non-finite loss ({result['loss']}); skipping update")
+                    continue
                 client_losses[domain_id] = result["loss"]
                 client_states.append(result["state"])
                 client_sizes.append(result["size"])
+                client_update_ids.append(domain_id)
+
+            if process_failed:
+                for domain_id in selected_ids:
+                    if round_seed is not None:
+                        torch.manual_seed(_client_seed(round_seed, domain_id))
+                    X_train, y_train = domain_data[domain_id]
+
+                    local_model = client_models[domain_id]
+                    local_model.load_state_dict(global_model.state_dict())
+                    optimizer = client_optimizers[domain_id]
+
+                    ds = TensorDataset(X_train, y_train)
+                    loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
+
+                    local_model.train()
+                    loss_val = 0.0
+                    for _ in range(local_epochs):
+                        epoch_loss = 0.0
+                        n = 0
+                        for xb, yb in loader:
+                            optimizer.zero_grad()
+                            pred = local_model(xb)
+                            loss = criterion(pred, yb)
+                            loss.backward()
+                            optimizer.step()
+                            epoch_loss += loss.item()
+                            n += 1
+                        loss_val = epoch_loss / max(n, 1)
+
+                    if not math.isfinite(float(loss_val)):
+                        print(f"  Client {domain_id} produced non-finite loss ({loss_val}); skipping update")
+                        continue
+                    client_losses[domain_id] = loss_val
+                    client_states.append({k: v.clone() for k, v in local_model.state_dict().items()})
+                    client_sizes.append(len(X_train))
+                    client_update_ids.append(domain_id)
         elif parallel_clients and len(selected_ids) > 1:
             worker_count = max_workers or len(selected_ids)
 
             def train_one(domain_id):
+                if round_seed is not None:
+                    torch.manual_seed(_client_seed(round_seed, domain_id))
                 X_train, y_train = domain_data[domain_id]
                 local_model = client_models[domain_id]
                 local_model.load_state_dict(global_model.state_dict())
@@ -286,12 +369,22 @@ def run_federated_mlp(
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
                 futures = [executor.submit(train_one, domain_id) for domain_id in selected_ids]
                 for future in as_completed(futures):
-                    domain_id, loss_val, state, size = future.result()
+                    try:
+                        domain_id, loss_val, state, size = future.result()
+                    except Exception as exc:
+                        print(f"  Client thread failed: {exc}")
+                        continue
+                    if not math.isfinite(float(loss_val)):
+                        print(f"  Client {domain_id} produced non-finite loss ({loss_val}); skipping update")
+                        continue
                     client_losses[domain_id] = loss_val
                     client_states.append(state)
                     client_sizes.append(size)
+                    client_update_ids.append(domain_id)
         else:
             for domain_id in selected_ids:
+                if round_seed is not None:
+                    torch.manual_seed(_client_seed(round_seed, domain_id))
                 X_train, y_train = domain_data[domain_id]
 
                 local_model = client_models[domain_id]
@@ -319,6 +412,17 @@ def run_federated_mlp(
                 client_losses[domain_id] = loss_val
                 client_states.append({k: v.clone() for k, v in local_model.state_dict().items()})
                 client_sizes.append(len(X_train))
+                client_update_ids.append(domain_id)
+
+        if not client_states:
+            print(f"  Round {r+1}/{rounds}: no valid client updates; skipping aggregation")
+            tracker.log_round(r + 1, client_losses, None)
+            continue
+
+        if len(client_update_ids) > 1:
+            order = sorted(range(len(client_update_ids)), key=lambda i: client_update_ids[i])
+            client_states = [client_states[i] for i in order]
+            client_sizes = [client_sizes[i] for i in order]
 
         # FedAvg aggregation
         total = sum(client_sizes)

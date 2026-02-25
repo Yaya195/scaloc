@@ -111,7 +111,7 @@ def run_centralized_gnn(
             if allowed_set is not None and domain_id not in allowed_set:
                 continue
             if domain_id in train_datasets:
-                graph = train_datasets[domain_id].graph
+                graph = copy.deepcopy(train_datasets[domain_id].graph)
                 val_datasets[domain_id] = FLQueryDataset(graph, queries)
 
     print(f"Centralized GNN: {len(train_datasets)} domains, "

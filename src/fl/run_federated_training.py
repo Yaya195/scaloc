@@ -1,13 +1,36 @@
 # src/fl/run_federated_training.py
 
 import time
+import math
 import multiprocessing as mp
+import torch
+from queue import Empty
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Optional
 
 from src.evaluation.tracker import ExperimentTracker
 from src.evaluation.inference import evaluate_fl_model
 from src.fl.utils import select_federated_client_ids
+
+
+def _client_seed(base_seed, client_id: str):
+    if base_seed is None:
+        return None
+    offset = sum((idx + 1) * ord(ch) for idx, ch in enumerate(str(client_id)))
+    return int(base_seed) + int(offset)
+
+
+def _state_dict_is_finite(state_dict) -> bool:
+    for value in state_dict.values():
+        if isinstance(value, torch.Tensor) and not torch.isfinite(value).all():
+            return False
+    return True
+
+
+def _client_params_are_finite(params) -> bool:
+    model_ok = _state_dict_is_finite(params.get("model", {}))
+    encoder_ok = _state_dict_is_finite(params.get("encoder", {}))
+    return model_ok and encoder_ok
 
 
 def _client_worker_main(client, in_queue, out_queue):
@@ -30,19 +53,27 @@ def _client_worker_main(client, in_queue, out_queue):
             except Exception:
                 pass
 
-        client.set_parameters(params)
-        loss_local = None
-        for _ in range(local_epochs):
-            loss_local = client.train_one_epoch()
+        try:
+            client.set_parameters(params)
+            loss_local = None
+            for _ in range(local_epochs):
+                loss_local = client.train_one_epoch()
 
-        out_queue.put(
-            {
-                "client_id": client.client_id,
-                "loss": loss_local,
-                "params": client.get_parameters(),
-                "size": len(client.dataset),
-            }
-        )
+            out_queue.put(
+                {
+                    "client_id": client.client_id,
+                    "loss": loss_local,
+                    "params": client.get_parameters(),
+                    "size": len(client.dataset),
+                }
+            )
+        except Exception as exc:
+            out_queue.put(
+                {
+                    "client_id": client.client_id,
+                    "error": repr(exc),
+                }
+            )
 
 
 class _ProcessClientPool:
@@ -67,18 +98,27 @@ class _ProcessClientPool:
 
     def train_selected(self, selected_clients, global_params, local_epochs, seed=None):
         for client in selected_clients:
+            client_seed = _client_seed(seed, client.client_id)
             self._in_queues[client.client_id].put(
                 {
                     "type": "train",
                     "params": global_params,
                     "local_epochs": local_epochs,
-                    "seed": seed,
+                    "seed": client_seed,
                 }
             )
 
         results = []
         for client in selected_clients:
-            results.append(self._out_queues[client.client_id].get())
+            client_id = client.client_id
+            try:
+                results.append(self._out_queues[client_id].get(timeout=1800))
+            except Empty:
+                proc = self._procs.get(client_id)
+                alive = bool(proc is not None and proc.is_alive())
+                raise RuntimeError(
+                    f"Timeout waiting for client {client_id} process result (alive={alive})"
+                )
 
         return results
 
@@ -147,6 +187,10 @@ def run_federated_training(
         print(f"Training with all {len(selected_clients)} clients")
     
     print()
+
+    if parallel_clients and str(device).startswith("cuda"):
+        print("[Run] CUDA detected: disabling parallel client training for stability.")
+        parallel_clients = False
     
     parallel_backend = (parallel_backend or "thread").lower()
     use_process_pool = parallel_clients and parallel_backend == "process" and len(clients) > 1
@@ -158,6 +202,7 @@ def run_federated_training(
     for r in range(rounds):
         round_start = time.time()
         print(f"--- Round {r+1}/{rounds} ---")
+        round_seed = (seed + r) if seed is not None else None
 
         global_params = server.get_global_parameters()
         if not use_process_pool:
@@ -167,8 +212,16 @@ def run_federated_training(
         client_params = []
         client_sizes = []
         client_losses = {}
+        client_update_ids = []
 
-        def train_client_local(client):
+        def train_client_local(client, local_seed=None):
+            if local_seed is not None:
+                try:
+                    import torch
+
+                    torch.manual_seed(local_seed)
+                except Exception:
+                    pass
             loss_local = None
             for _ in range(local_epochs):
                 loss_local = client.train_one_epoch()
@@ -177,38 +230,111 @@ def run_federated_training(
             return client.client_id, loss_local, params, size
 
         if use_process_pool:
-            results = process_pool.train_selected(
-                selected_clients,
-                global_params,
-                local_epochs,
-                seed=seed,
-            )
+            process_failed = False
+            try:
+                results = process_pool.train_selected(
+                    selected_clients,
+                    global_params,
+                    local_epochs,
+                    seed=round_seed,
+                )
+            except Exception as exc:
+                print(f"[Run] Process backend failed this round: {exc}. Falling back to serial.")
+                use_process_pool = False
+                results = []
+                process_failed = True
             for result in results:
                 client_id = result["client_id"]
+                if "error" in result:
+                    print(f"  Client {client_id} failed in process worker: {result['error']}")
+                    continue
                 loss = result["loss"]
                 params = result["params"]
                 size = result["size"]
+                if not math.isfinite(float(loss)):
+                    print(f"  Client {client_id} produced non-finite loss ({loss}); skipping update")
+                    continue
+                if not _client_params_are_finite(params):
+                    print(f"  Client {client_id} produced non-finite parameters; skipping update")
+                    continue
                 print(f"  Client {client_id} loss: {loss:.4f}")
                 client_losses[client_id] = loss
                 client_params.append(params)
                 client_sizes.append(size)
-        elif parallel_clients and len(selected_clients) > 1:
-            worker_count = max_workers or len(selected_clients)
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                futures = [executor.submit(train_client_local, client) for client in selected_clients]
-                for future in as_completed(futures):
-                    client_id, loss, params, size = future.result()
+                client_update_ids.append(client_id)
+
+            if process_failed:
+                for client in selected_clients:
+                    client.set_parameters(global_params)
+                    client_id, loss, params, size = train_client_local(
+                        client,
+                        local_seed=_client_seed(round_seed, client.client_id),
+                    )
+                    if not math.isfinite(float(loss)):
+                        print(f"  Client {client_id} produced non-finite loss ({loss}); skipping update")
+                        continue
+                    if not _client_params_are_finite(params):
+                        print(f"  Client {client_id} produced non-finite parameters; skipping update")
+                        continue
                     print(f"  Client {client_id} loss: {loss:.4f}")
                     client_losses[client_id] = loss
                     client_params.append(params)
                     client_sizes.append(size)
+                    client_update_ids.append(client_id)
+        elif parallel_clients and len(selected_clients) > 1:
+            worker_count = max_workers or len(selected_clients)
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [
+                    executor.submit(
+                        train_client_local,
+                        client,
+                        _client_seed(round_seed, client.client_id),
+                    )
+                    for client in selected_clients
+                ]
+                for future in as_completed(futures):
+                    try:
+                        client_id, loss, params, size = future.result()
+                    except Exception as exc:
+                        print(f"  Client thread failed: {exc}")
+                        continue
+                    if not math.isfinite(float(loss)):
+                        print(f"  Client {client_id} produced non-finite loss ({loss}); skipping update")
+                        continue
+                    if not _client_params_are_finite(params):
+                        print(f"  Client {client_id} produced non-finite parameters; skipping update")
+                        continue
+                    print(f"  Client {client_id} loss: {loss:.4f}")
+                    client_losses[client_id] = loss
+                    client_params.append(params)
+                    client_sizes.append(size)
+                    client_update_ids.append(client_id)
         else:
             for client in selected_clients:
-                client_id, loss, params, size = train_client_local(client)
+                client_id, loss, params, size = train_client_local(
+                    client,
+                    local_seed=_client_seed(round_seed, client.client_id),
+                )
+                if not math.isfinite(float(loss)):
+                    print(f"  Client {client_id} produced non-finite loss ({loss}); skipping update")
+                    continue
+                if not _client_params_are_finite(params):
+                    print(f"  Client {client_id} produced non-finite parameters; skipping update")
+                    continue
                 print(f"  Client {client_id} loss: {loss:.4f}")
                 client_losses[client_id] = loss
                 client_params.append(params)
                 client_sizes.append(size)
+                client_update_ids.append(client_id)
+
+        if not client_params:
+            print("  No valid client updates this round; skipping aggregation.\n")
+            continue
+
+        if len(client_update_ids) > 1:
+            order = sorted(range(len(client_update_ids)), key=lambda i: client_update_ids[i])
+            client_params = [client_params[i] for i in order]
+            client_sizes = [client_sizes[i] for i in order]
 
         server.aggregate(client_params, client_sizes)
         

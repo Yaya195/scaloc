@@ -1,6 +1,7 @@
 # src/data/fl_query_dataset.py
 
 import torch
+import numpy as np
 from torch.utils.data import Dataset
 
 from src.data.normalization import normalize_rssi_values
@@ -28,9 +29,20 @@ class FLQueryDataset(Dataset):
         self.queries = queries
         
         # Extract normalization stats from graph
-        self.coord_min = graph_data.coord_min.numpy()
-        self.coord_max = graph_data.coord_max.numpy()
+        self.coord_min = (
+            graph_data.coord_min.detach().cpu().numpy().astype(np.float32).copy()
+        )
+        self.coord_max = (
+            graph_data.coord_max.detach().cpu().numpy().astype(np.float32).copy()
+        )
+        if not np.isfinite(self.coord_min).all() or not np.isfinite(self.coord_max).all():
+            raise ValueError(
+                f"Invalid coordinate normalization stats for domain "
+                f"{getattr(graph_data, 'domain_id', 'unknown')}: "
+                f"coord_min={self.coord_min}, coord_max={self.coord_max}"
+            )
         self.coord_range = self.coord_max - self.coord_min
+        self.coord_range = np.maximum(self.coord_range, 1e-6)
         self.rssi_min = float(graph_data.rssi_min.item()) if hasattr(graph_data, "rssi_min") else -110.0
         self.rssi_max = float(graph_data.rssi_max.item()) if hasattr(graph_data, "rssi_max") else -30.0
 

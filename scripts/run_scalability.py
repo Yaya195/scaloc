@@ -29,7 +29,6 @@ from src.fl.client import FLClient
 from src.fl.run_federated_training import run_federated_training
 from src.data.rp_graph_builder import build_domain_graph
 from src.data.fl_query_dataset import FLQueryDataset
-from src.data.normalization import fit_domain_normalization_stats
 from src.evaluation.tracker import ExperimentTracker
 from src.utils.device import resolve_device
 from run_fl_experiment import load_queries, load_domains
@@ -65,9 +64,31 @@ def build_experiment(
 
     clients = []
     graph_data_dict = {}
-    domain_norm_stats = fit_domain_normalization_stats(
-        {domain_id: queries for domain_id, (_rp, queries) in domains_subset.items()}
-    )
+    domain_norm_stats = {}
+    for domain_id, (rp_table_full, queries_full) in domains_subset.items():
+        coords = rp_table_full[["x", "y"]].to_numpy().astype(float)
+        coord_min = coords.min(axis=0).astype("float32")
+        coord_max = coords.max(axis=0).astype("float32")
+
+        rssi_vals = [float(v) for q in queries_full for v in q.get("rssi", [])]
+        if not rssi_vals:
+            rssi_vals = [float(v) for row in rp_table_full["rssi"] for v in row]
+
+        if rssi_vals:
+            rssi_min = float(min(rssi_vals))
+            rssi_max = float(max(rssi_vals))
+            if abs(rssi_max - rssi_min) < 1e-6:
+                rssi_max = rssi_min + 1.0
+        else:
+            rssi_min = -110.0
+            rssi_max = -30.0
+
+        domain_norm_stats[domain_id] = {
+            "coord_min": coord_min,
+            "coord_max": coord_max,
+            "rssi_min": rssi_min,
+            "rssi_max": rssi_max,
+        }
 
     for domain_id, (rp_table, queries) in domains_subset.items():
         # Optionally limit RPs
@@ -110,7 +131,7 @@ def build_experiment(
     val_datasets = {}
     for domain_id, queries in val_queries_all.items():
         if domain_id in graph_data_dict:
-            val_datasets[domain_id] = FLQueryDataset(graph_data_dict[domain_id], queries)
+            val_datasets[domain_id] = FLQueryDataset(copy.deepcopy(graph_data_dict[domain_id]), queries)
 
     return server, clients, val_datasets
 

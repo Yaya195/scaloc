@@ -158,12 +158,22 @@ def evaluate_model_on_domain(
     graph = dataset.graph.to(device)
     coord_min = dataset.coord_min
     coord_max = dataset.coord_max
+    domain_id = getattr(graph, "domain_id", "unknown")
     
     # Re-encode graph with current encoder
     rp_ap_ids, rp_rssi, rp_mask = _pack_rp_fingerprints(graph.rp_fingerprints, device)
     rp_feats = encoder.encode_packed(rp_ap_ids, rp_rssi, rp_mask)
+
+    if not torch.isfinite(rp_feats).all():
+        raise RuntimeError(
+            f"Non-finite RP features during evaluation for domain {domain_id}"
+        )
     
     graph.x = rp_feats
+    if not torch.isfinite(graph.pos).all():
+        raise RuntimeError(
+            f"Non-finite graph positions during evaluation for domain {domain_id}"
+        )
     
     preds = []
     truths = []
@@ -174,15 +184,38 @@ def evaluate_model_on_domain(
         rssi = rssi.to(device)
         
         z_q = encoder(ap_ids, rssi)
+        if not torch.isfinite(z_q).all():
+            raise RuntimeError(
+                f"Non-finite query embedding during evaluation: domain={domain_id}, idx={i}, "
+                f"ap_count={len(ap_ids)}, rssi_min={float(rssi.min().item()) if rssi.numel() else 'na'}, "
+                f"rssi_max={float(rssi.max().item()) if rssi.numel() else 'na'}"
+            )
         p_hat, _ = model(graph, z_q)
+        if not torch.isfinite(p_hat).all():
+            raise RuntimeError(
+                f"Non-finite normalized prediction during evaluation: domain={domain_id}, idx={i}, "
+                f"ap_count={len(ap_ids)}, pos_norm={pos_norm.detach().cpu().tolist()}"
+            )
         
         # Denormalize
         p_hat_metric = denormalize_position(p_hat.cpu().numpy(), coord_min, coord_max)
         p_true_metric = denormalize_position(pos_norm.numpy(), coord_min, coord_max)
+
+        if not np.isfinite(p_hat_metric).all():
+            raise RuntimeError(
+                f"Non-finite denormalized prediction during evaluation: domain={domain_id}, idx={i}, "
+                f"p_hat_norm={p_hat.detach().cpu().tolist()}, coord_min={coord_min.tolist()}, "
+                f"coord_max={coord_max.tolist()}"
+            )
+        if not np.isfinite(p_true_metric).all():
+            raise RuntimeError(
+                f"Non-finite denormalized truth during evaluation: domain={domain_id}, idx={i}, "
+                f"pos_norm={pos_norm.detach().cpu().tolist()}, coord_min={coord_min.tolist()}, "
+                f"coord_max={coord_max.tolist()}"
+            )
         
         preds.append(p_hat_metric)
         truths.append(p_true_metric)
-    
     return np.stack(preds), np.stack(truths)
 
 
