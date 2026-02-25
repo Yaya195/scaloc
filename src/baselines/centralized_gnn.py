@@ -39,10 +39,10 @@ def run_centralized_gnn(
     arch: str = None,
     hidden_dim: int = None,
     gnn_layers: int = None,
-    epochs: int = 50,
-    lr: float = 5e-4,
+    epochs: int = None,
+    lr: float = None,
     device: str = "auto",
-    eval_every: int = 5,
+    eval_every: int = None,
     allowed_domains=None,
     experiment_name: str = "centralized_gnn",
 ) -> dict:
@@ -61,6 +61,8 @@ def run_centralized_gnn(
     allowed_set = set(allowed_domains) if allowed_domains is not None else None
 
     model_cfg = load_config("model_config")
+    fl_cfg = load_config("fl_config")
+    train_cfg = load_config("train_config")
     if num_aps is None:
         num_aps = int(model_cfg["encoder"]["num_aps"])
     if latent_dim is None:
@@ -75,6 +77,12 @@ def run_centralized_gnn(
         hidden_dim = int(model_cfg["gnn"]["hidden_dim"])
     if gnn_layers is None:
         gnn_layers = int(model_cfg["gnn"]["num_layers"])
+    if epochs is None:
+        epochs = int(fl_cfg["federated"]["rounds"]) * int(fl_cfg["federated"]["local_epochs"])
+    if lr is None:
+        lr = float(train_cfg["training"]["learning_rate"])
+    if eval_every is None:
+        eval_every = int(train_cfg["logging"]["eval_every"])
 
     # --- Create model + encoder ---
     encoder = APWiseEncoder(

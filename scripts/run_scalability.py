@@ -48,6 +48,8 @@ def build_experiment(
     max_rps_per_domain: int = None,
     max_queries_per_domain: int = None,
     seed: int = 42,
+    rp_sample_seed: int = None,
+    query_sample_seed: int = None,
 ):
     """Build server, clients, val_datasets for a scalability experiment."""
     num_aps = model_cfg["encoder"]["num_aps"]
@@ -100,11 +102,16 @@ def build_experiment(
     for domain_id, (rp_table, queries) in domains_subset.items():
         # Optionally limit RPs
         if max_rps_per_domain and len(rp_table) > max_rps_per_domain:
-            rp_table = rp_table.sample(n=max_rps_per_domain, random_state=42)
+            rp_table = rp_table.sample(
+                n=max_rps_per_domain,
+                random_state=rp_sample_seed if rp_sample_seed is not None else seed,
+            )
 
         # Optionally limit queries
         if max_queries_per_domain and len(queries) > max_queries_per_domain:
-            rng = np.random.RandomState(seed)
+            rng = np.random.RandomState(
+                query_sample_seed if query_sample_seed is not None else seed
+            )
             idx = rng.choice(len(queries), size=max_queries_per_domain, replace=False)
             queries = [queries[i] for i in sorted(idx)]
 
@@ -192,12 +199,22 @@ def run_one_experiment(
     }
 
 
-def vary_num_domains(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device):
+def vary_num_domains(
+    all_domains,
+    val_queries_all,
+    model_cfg,
+    fl_cfg,
+    train_cfg,
+    device,
+    domain_counts,
+    rp_sample_seed,
+    query_sample_seed,
+):
     """Experiment 1: vary number of client domains K."""
     domain_ids = sorted(all_domains.keys())
     results = []
-    for k in [2, 4, 6, 8, 10, len(domain_ids)]:
-        k = min(k, len(domain_ids))
+    for k_cfg in domain_counts:
+        k = len(domain_ids) if k_cfg is None else min(int(k_cfg), len(domain_ids))
         subset = {d: all_domains[d] for d in domain_ids[:k]}
         print(f"\n=== Domains K={k} ===")
         server, clients, val_ds = build_experiment(
@@ -208,6 +225,8 @@ def vary_num_domains(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg,
             train_cfg,
             device,
             seed=fl_cfg["federated"]["seed"],
+            rp_sample_seed=rp_sample_seed,
+            query_sample_seed=query_sample_seed,
         )
         r = run_one_experiment(
             f"scale_domains_{k}", server, clients, val_ds, fl_cfg, train_cfg, device
@@ -217,10 +236,20 @@ def vary_num_domains(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg,
     return results
 
 
-def vary_graph_size(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device):
+def vary_graph_size(
+    all_domains,
+    val_queries_all,
+    model_cfg,
+    fl_cfg,
+    train_cfg,
+    device,
+    max_rps_grid,
+    rp_sample_seed,
+    query_sample_seed,
+):
     """Experiment 2: vary max RPs per domain."""
     results = []
-    for max_rps in [10, 25, 50, 100, None]:
+    for max_rps in max_rps_grid:
         label = max_rps if max_rps else "all"
         print(f"\n=== Max RPs per domain: {label} ===")
         server, clients, val_ds = build_experiment(
@@ -232,6 +261,8 @@ def vary_graph_size(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, 
             device,
             max_rps_per_domain=max_rps,
             seed=fl_cfg["federated"]["seed"],
+            rp_sample_seed=rp_sample_seed,
+            query_sample_seed=query_sample_seed,
         )
         r = run_one_experiment(
             f"scale_rps_{label}", server, clients, val_ds, fl_cfg, train_cfg, device
@@ -241,10 +272,20 @@ def vary_graph_size(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, 
     return results
 
 
-def vary_data_volume(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device):
+def vary_data_volume(
+    all_domains,
+    val_queries_all,
+    model_cfg,
+    fl_cfg,
+    train_cfg,
+    device,
+    max_queries_grid,
+    rp_sample_seed,
+    query_sample_seed,
+):
     """Experiment 3: vary samples per domain."""
     results = []
-    for max_q in [25, 50, 100, 250, 500, None]:
+    for max_q in max_queries_grid:
         label = max_q if max_q else "all"
         print(f"\n=== Max queries per domain: {label} ===")
         server, clients, val_ds = build_experiment(
@@ -256,6 +297,8 @@ def vary_data_volume(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg,
             device,
             max_queries_per_domain=max_q,
             seed=fl_cfg["federated"]["seed"],
+            rp_sample_seed=rp_sample_seed,
+            query_sample_seed=query_sample_seed,
         )
         r = run_one_experiment(
             f"scale_queries_{label}", server, clients, val_ds, fl_cfg, train_cfg, device
@@ -265,10 +308,20 @@ def vary_data_volume(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg,
     return results
 
 
-def vary_rounds(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device):
+def vary_rounds(
+    all_domains,
+    val_queries_all,
+    model_cfg,
+    fl_cfg,
+    train_cfg,
+    device,
+    rounds_grid,
+    rp_sample_seed,
+    query_sample_seed,
+):
     """Experiment 4: convergence analysis — vary number of FL rounds."""
     results = []
-    for rounds in [10, 25, 50, 100]:
+    for rounds in rounds_grid:
         print(f"\n=== Rounds: {rounds} ===")
         server, clients, val_ds = build_experiment(
             all_domains,
@@ -278,6 +331,8 @@ def vary_rounds(all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, devi
             train_cfg,
             device,
             seed=fl_cfg["federated"]["seed"],
+            rp_sample_seed=rp_sample_seed,
+            query_sample_seed=query_sample_seed,
         )
         r = run_one_experiment(
             f"scale_rounds_{rounds}", server, clients, val_ds, fl_cfg, train_cfg, device,
@@ -303,6 +358,14 @@ def main():
     model_cfg = load_config("model_config")
     fl_cfg = load_config("fl_config")
     train_cfg = load_config("train_config")
+    scalability_cfg = fl_cfg.get("scalability", {})
+
+    domain_counts = scalability_cfg["domain_counts"]
+    max_rps_grid = scalability_cfg["max_rps_per_domain"]
+    max_queries_grid = scalability_cfg["max_queries_per_domain"]
+    rounds_grid = scalability_cfg["rounds_grid"]
+    rp_sample_seed = scalability_cfg["rp_sample_seed"]
+    query_sample_seed = scalability_cfg["query_sample_seed"]
     device = resolve_device(train_cfg["training"].get("device", "auto"))
     print(f"[device] Using {device}")
 
@@ -321,7 +384,15 @@ def main():
         print("SCALABILITY: Varying number of domains (K)")
         print("=" * 60)
         all_results["domains"] = vary_num_domains(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device
+            all_domains,
+            val_queries_all,
+            model_cfg,
+            fl_cfg,
+            train_cfg,
+            device,
+            domain_counts,
+            rp_sample_seed,
+            query_sample_seed,
         )
 
     if "rps" in experiments:
@@ -329,7 +400,15 @@ def main():
         print("SCALABILITY: Varying graph size (max RPs)")
         print("=" * 60)
         all_results["rps"] = vary_graph_size(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device
+            all_domains,
+            val_queries_all,
+            model_cfg,
+            fl_cfg,
+            train_cfg,
+            device,
+            max_rps_grid,
+            rp_sample_seed,
+            query_sample_seed,
         )
 
     if "queries" in experiments:
@@ -337,7 +416,15 @@ def main():
         print("SCALABILITY: Varying data volume (queries per domain)")
         print("=" * 60)
         all_results["queries"] = vary_data_volume(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device
+            all_domains,
+            val_queries_all,
+            model_cfg,
+            fl_cfg,
+            train_cfg,
+            device,
+            max_queries_grid,
+            rp_sample_seed,
+            query_sample_seed,
         )
 
     if "rounds" in experiments:
@@ -345,7 +432,15 @@ def main():
         print("SCALABILITY: Convergence analysis (rounds)")
         print("=" * 60)
         all_results["rounds"] = vary_rounds(
-            all_domains, val_queries_all, model_cfg, fl_cfg, train_cfg, device
+            all_domains,
+            val_queries_all,
+            model_cfg,
+            fl_cfg,
+            train_cfg,
+            device,
+            rounds_grid,
+            rp_sample_seed,
+            query_sample_seed,
         )
 
     # Save summary

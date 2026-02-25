@@ -20,7 +20,6 @@ from src.fl.utils import select_federated_client_ids
 from src.utils.device import resolve_device
 
 SAMPLES_DIR = Path("data/processed/samples")
-RESULTS_DIR = Path("results")
 SUPPORTED_ARCHS = ["gcn", "sage", "gat", "gin", "egnn"]
 
 
@@ -54,7 +53,24 @@ def select_fair_domains(fl_cfg):
     return common_domains, selected_domains
 
 
-def run_architecture_suite(architectures):
+def load_experiment_cfg():
+    baseline_cfg = load_config("baseline_config")
+    exp_cfg = baseline_cfg["centralized_gnn_architecture_experiment"]
+
+    configured_archs = exp_cfg["architectures"]
+    architectures = [arch for arch in configured_archs if arch in SUPPORTED_ARCHS]
+    if not architectures:
+        raise ValueError(
+            "baseline_config.centralized_gnn_architecture_experiment.architectures "
+            "must include at least one of: " + ", ".join(SUPPORTED_ARCHS)
+        )
+
+    results_dir = Path(exp_cfg["results_dir"])
+    output_filename = str(exp_cfg["output_filename"])
+    return architectures, results_dir, output_filename
+
+
+def run_architecture_suite(architectures, results_dir: Path, output_filename: str):
     model_cfg = load_config("model_config")
     train_cfg = load_config("train_config")
     fl_cfg = load_config("fl_config")
@@ -128,8 +144,8 @@ def run_architecture_suite(architectures):
         },
     }
 
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = RESULTS_DIR / "centralized_gnn_architecture_comparison.json"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    out_path = results_dir / output_filename
     with open(out_path, "w") as f:
         json.dump(payload, f, indent=2, cls=NumpyEncoder)
 
@@ -153,17 +169,19 @@ def run_architecture_suite(architectures):
 
 
 def main():
+    cfg_architectures, results_dir, output_filename = load_experiment_cfg()
+
     parser = argparse.ArgumentParser(description="Compare centralized GNN architectures")
     parser.add_argument(
         "--architectures",
         nargs="+",
-        default=SUPPORTED_ARCHS,
+        default=cfg_architectures,
         choices=SUPPORTED_ARCHS,
         help="Architectures to evaluate",
     )
     args = parser.parse_args()
 
-    run_architecture_suite(args.architectures)
+    run_architecture_suite(args.architectures, results_dir, output_filename)
 
 
 if __name__ == "__main__":

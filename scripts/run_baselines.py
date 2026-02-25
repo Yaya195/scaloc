@@ -42,37 +42,36 @@ def load_all_data():
     return train_queries, val_queries
 
 
-def run_knn(train_queries, val_queries, num_aps):
+def run_knn(train_queries, val_queries, num_aps, baseline_cfg):
     """Run k-NN baseline."""
     print("\n" + "=" * 60)
     print("BASELINE: k-NN Fingerprinting")
     print("=" * 60)
     from src.baselines.knn_baseline import run_knn_baseline
-    model_cfg = load_config("model_config")
-    baseline_cfg = model_cfg.get("baselines", {})
+    knn_cfg = baseline_cfg.get("knn", {})
     return run_knn_baseline(
         train_queries=train_queries,
         val_queries=val_queries,
         num_aps=num_aps,
-        k=int(baseline_cfg.get("knn_k", 5)),
+        k=int(knn_cfg["k"]),
     )
 
 
-def run_centralized_mlp(train_queries, val_queries, num_aps, device, train_cfg, fl_cfg):
+def run_centralized_mlp(train_queries, val_queries, num_aps, device, train_cfg, fl_cfg, baseline_cfg):
     """Run Centralized MLP baseline."""
     print("\n" + "=" * 60)
     print("BASELINE: Centralized MLP")
     print("=" * 60)
     from src.baselines.centralized_mlp import run_centralized_mlp as _run
     model_cfg = load_config("model_config")
-    baseline_cfg = model_cfg.get("baselines", {})
+    mlp_cfg = baseline_cfg.get("mlp", {})
     return _run(
         train_queries=train_queries,
         val_queries=val_queries,
         num_aps=num_aps,
-        hidden_dim=int(baseline_cfg.get("mlp_hidden_dim", model_cfg["gnn"]["hidden_dim"])),
-        num_layers=int(baseline_cfg.get("mlp_num_layers", model_cfg["gnn"]["num_layers"])),
-        dropout=float(baseline_cfg.get("mlp_dropout", model_cfg["encoder"].get("dropout", 0.2))),
+        hidden_dim=int(mlp_cfg["hidden_dim"]),
+        num_layers=int(mlp_cfg["num_layers"]),
+        dropout=float(mlp_cfg["dropout"]),
         epochs=fl_cfg["federated"]["rounds"] * fl_cfg["federated"]["local_epochs"],  # total epochs across all rounds
         lr=float(train_cfg["training"]["learning_rate"]),
         batch_size=int(train_cfg["training"].get("batch_size", 128)),
@@ -81,22 +80,21 @@ def run_centralized_mlp(train_queries, val_queries, num_aps, device, train_cfg, 
     )
 
 
-def run_federated_mlp(train_queries, val_queries, num_aps, fl_cfg, train_cfg, device):
+def run_federated_mlp(train_queries, val_queries, num_aps, fl_cfg, train_cfg, device, baseline_cfg):
     """Run Federated MLP baseline with same FL protocol as FedGNN."""
     print("\n" + "=" * 60)
     print("BASELINE: Federated MLP")
     print("=" * 60)
     from src.baselines.federated_mlp import run_federated_mlp as _run
     parallel_cfg = fl_cfg.get("parallel", {})
-    model_cfg = load_config("model_config")
-    baseline_cfg = model_cfg.get("baselines", {})
+    mlp_cfg = baseline_cfg.get("mlp", {})
     return _run(
         train_queries=train_queries,
         val_queries=val_queries,
         num_aps=num_aps,
-        hidden_dim=int(baseline_cfg.get("mlp_hidden_dim", model_cfg["gnn"]["hidden_dim"])),
-        num_layers=int(baseline_cfg.get("mlp_num_layers", model_cfg["gnn"]["num_layers"])),
-        dropout=float(baseline_cfg.get("mlp_dropout", model_cfg["encoder"].get("dropout", 0.2))),
+        hidden_dim=int(mlp_cfg["hidden_dim"]),
+        num_layers=int(mlp_cfg["num_layers"]),
+        dropout=float(mlp_cfg["dropout"]),
         rounds=fl_cfg["federated"]["rounds"],
         local_epochs=fl_cfg["federated"]["local_epochs"],  # same as FedGNN
         lr=float(train_cfg["training"]["learning_rate"]),
@@ -138,6 +136,7 @@ def main():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     model_cfg = load_config("model_config")
+    baseline_cfg = load_config("baseline_config")
     fl_cfg = load_config("fl_config")
     train_cfg = load_config("train_config")
     device = resolve_device(train_cfg["training"].get("device", "auto"))
@@ -171,17 +170,33 @@ def main():
     comparison = {}
 
     # 1. k-NN
-    knn_results = run_knn(train_queries, val_queries, num_aps_vector)
+    knn_results = run_knn(train_queries, val_queries, num_aps_vector, baseline_cfg)
     comparison["knn"] = knn_results.get("global", {})
     print(f"  k-NN global: {comparison['knn']}")
 
     # 2. Centralized MLP
-    cmlp_results = run_centralized_mlp(train_queries, val_queries, num_aps_vector, device, train_cfg, fl_cfg)
+    cmlp_results = run_centralized_mlp(
+        train_queries,
+        val_queries,
+        num_aps_vector,
+        device,
+        train_cfg,
+        fl_cfg,
+        baseline_cfg,
+    )
     comparison["centralized_mlp"] = cmlp_results.get("global", {})
     print(f"  Centralized MLP global: {comparison['centralized_mlp']}")
 
     # 3. Federated MLP
-    fmlp_results = run_federated_mlp(train_queries, val_queries, num_aps_vector, fl_cfg, train_cfg, device)
+    fmlp_results = run_federated_mlp(
+        train_queries,
+        val_queries,
+        num_aps_vector,
+        fl_cfg,
+        train_cfg,
+        device,
+        baseline_cfg,
+    )
     comparison["federated_mlp"] = fmlp_results.get("global", {})
     print(f"  Federated MLP global: {comparison['federated_mlp']}")
 

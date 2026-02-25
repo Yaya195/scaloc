@@ -1,6 +1,6 @@
 federated:
   algorithm: fedavg
-  rounds: 2
+  rounds: 50
   local_epochs: 1
   client_fraction: 1.0
   min_clients: 2
@@ -16,3 +16,11 @@ parallel:
   enabled: true
   backend: process  # thread or process
   max_workers: null
+
+scalability:
+  domain_counts: [2, 4, 6, 8, 10, null]
+  max_rps_per_domain: [10, 25, 50, 100, null]
+  max_queries_per_domain: [25, 50, 100, 250, 500, null]
+  rounds_grid: [10, 25, 50, 100]
+  rp_sample_seed: 42
+  query_sample_seed: 42

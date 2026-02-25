@@ -1,0 +1,17 @@
+knn:
+  k: 5
+
+mlp:
+  hidden_dim: 128
+  num_layers: 3
+  dropout: 0.2
+
+centralized_gnn:
+  use_main_gnn_arch: true
+  use_main_hidden_dim: true
+  use_main_num_layers: true
+
+centralized_gnn_architecture_experiment:
+  architectures: [gcn, sage, gat, gin, egnn]
+  results_dir: results
+  output_filename: centralized_gnn_architecture_comparison.json

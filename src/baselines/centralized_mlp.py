@@ -89,8 +89,8 @@ def run_centralized_mlp(
     hidden_dim: int = None,
     num_layers: int = None,
     dropout: float = None,
-    epochs: int = 50,
-    lr: float = 1e-3,
+    epochs: int = None,
+    lr: float = None,
     batch_size: int = None,
     eval_every: int = None,
     device: str = "auto",
@@ -104,17 +104,23 @@ def run_centralized_mlp(
     """
     device = resolve_device(device)
     model_cfg = load_config("model_config")
+    baseline_cfg_all = load_config("baseline_config")
+    fl_cfg = load_config("fl_config")
     train_cfg = load_config("train_config")
-    baseline_cfg = model_cfg.get("baselines", {})
+    baseline_cfg = baseline_cfg_all.get("mlp", {})
 
     if num_aps is None:
         num_aps = int(model_cfg["encoder"]["num_aps"]) - 1
     if hidden_dim is None:
-        hidden_dim = int(baseline_cfg.get("mlp_hidden_dim", model_cfg["gnn"]["hidden_dim"]))
+        hidden_dim = int(baseline_cfg["hidden_dim"])
     if num_layers is None:
-        num_layers = int(baseline_cfg.get("mlp_num_layers", model_cfg["gnn"]["num_layers"]))
+        num_layers = int(baseline_cfg["num_layers"])
     if dropout is None:
-        dropout = float(baseline_cfg.get("mlp_dropout", model_cfg["encoder"].get("dropout", 0.2)))
+        dropout = float(baseline_cfg["dropout"])
+    if epochs is None:
+        epochs = int(fl_cfg["federated"]["rounds"]) * int(fl_cfg["federated"]["local_epochs"])
+    if lr is None:
+        lr = float(train_cfg["training"]["learning_rate"])
     if batch_size is None:
         batch_size = int(train_cfg["training"].get("batch_size", 128))
     if eval_every is None:

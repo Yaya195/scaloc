@@ -16,9 +16,3 @@ gnn:
   
 fusion:
   enabled: false
-
-baselines:
-  knn_k: 5
-  mlp_hidden_dim: 128
-  mlp_num_layers: 3
-  mlp_dropout: 0.2
