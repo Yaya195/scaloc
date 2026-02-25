@@ -145,6 +145,7 @@ class FLClient:
             if not grad_finite:
                 print(f"  WARNING: Non-finite gradients for client {self.client_id}; skipping optimizer step")
                 self.optimizer.zero_grad(set_to_none=True)
+                self.scaler.update()
                 continue
 
             torch.nn.utils.clip_grad_norm_(
