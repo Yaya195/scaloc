@@ -1,6 +1,6 @@
 federated:
   algorithm: fedavg
-  rounds: 50
+  rounds: 100
   local_epochs: 1
   client_fraction: 1.0
   min_clients: 2
@@ -18,9 +18,14 @@ parallel:
   max_workers: null
 
 scalability:
-  domain_counts: [2, 4, 6, 8, 10, null]
-  max_rps_per_domain: [10, 25, 50, 100, null]
-  max_queries_per_domain: [25, 50, 100, 250, 500, null]
-  rounds_grid: [10, 25, 50, 100]
+  # FL experiment: incrementally increase number of selected domains (K).
+  # null means use all available domains.
+  domain_counts: [3, 5, 7, 9, 11, 13, null]
+
+  # Global-single-graph experiments (non-FL):
+  # caps are applied on pooled data across all domains.
+  max_rps_global: [25, 50, 75, 100, 150, 200, null]
+  max_queries_global: [1000, 2500, 5000, 10000, 15000, 20000, null]
+
   rp_sample_seed: 42
   query_sample_seed: 42

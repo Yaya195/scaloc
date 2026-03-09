@@ -126,6 +126,7 @@ def run_centralized_gnn(model_cfg, train_cfg, device, allowed_domains, fl_cfg):
         gnn_layers=model_cfg["gnn"]["num_layers"],
         epochs=fl_cfg["federated"]["rounds"] * fl_cfg["federated"]["local_epochs"],  # total epochs across all rounds
         lr=float(train_cfg["training"]["learning_rate"]),
+        batch_size=int(train_cfg["training"]["batch_size"]),
         eval_every=int(train_cfg["logging"].get("eval_every", 5)),
         device=device,
         allowed_domains=allowed_domains,

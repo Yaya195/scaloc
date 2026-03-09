@@ -58,12 +58,15 @@ class FLIndoorModel(nn.Module):
         """
         Args:
             data: PyG Data with x, pos, edge_index
-            z_q:  (latent_dim,) query embedding
+            z_q:  (latent_dim,) query embedding or (B, latent_dim)
 
         Returns:
-            p_hat: (2,) predicted position
-            w:     (N,) node weights
+            p_hat: (2,) predicted position for single query or (B, 2) for batched queries
+            w:     (N,) node weights for single query or (B, N) for batched queries
         """
+        if z_q.ndim == 2:
+            return self._forward_batched(data, z_q)
+
         N = data.x.size(0)
         z_q_tiled = z_q.unsqueeze(0).repeat(N, 1)
 
@@ -76,5 +79,52 @@ class FLIndoorModel(nn.Module):
 
         pos = data.pos                             # (N, 2)
         p_hat = (w.unsqueeze(-1) * pos).sum(dim=0) # (2,)
+
+        return p_hat, w
+
+    def _forward_batched(self, data, z_q_batch):
+        """
+        Batched query forward against one RP graph.
+
+        Args:
+            data: PyG Data with x, pos, edge_index
+            z_q_batch: (B, latent_dim)
+
+        Returns:
+            p_hat_batch: (B, 2)
+            w_batch: (B, N)
+        """
+        B = z_q_batch.size(0)
+        N = data.x.size(0)
+
+        x_base = data.x
+        pos_base = data.pos
+        edge_index_base = data.edge_index
+
+        x_rep = x_base.repeat(B, 1)  # (B*N, F)
+        z_rep = z_q_batch.repeat_interleave(N, dim=0)  # (B*N, latent_dim)
+
+        x_cat = torch.cat([x_rep, z_rep], dim=-1)
+        pos_rep = pos_base.repeat(B, 1)  # (B*N, 2)
+
+        if edge_index_base.numel() == 0:
+            edge_index_rep = edge_index_base
+        else:
+            edges = []
+            for b in range(B):
+                edges.append(edge_index_base + b * N)
+            edge_index_rep = torch.cat(edges, dim=1)
+
+        data_b = data.clone()
+        data_b.x = x_cat
+        data_b.pos = pos_rep
+        data_b.edge_index = edge_index_rep
+
+        node_emb = self.gnn(data_b)  # (B*N, hidden_dim)
+        scores = self.scorer(node_emb).squeeze(-1).view(B, N)  # (B, N)
+        w = F.softmax(scores, dim=1)  # (B, N)
+
+        pos = pos_rep.view(B, N, 2)
+        p_hat = (w.unsqueeze(-1) * pos).sum(dim=1)  # (B, 2)
 
         return p_hat, w

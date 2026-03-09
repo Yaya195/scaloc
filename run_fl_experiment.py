@@ -101,6 +101,7 @@ def main():
     parallel_backend = parallel_cfg.get("backend", "thread")
     
     lr = train_cfg["training"]["learning_rate"]
+    batch_size = train_cfg["training"].get("batch_size", 128)
     device = resolve_device(train_cfg["training"].get("device", "auto"))
     print(f"[device] Using {device}")
     eval_every = train_cfg["logging"].get("eval_every", 5)
@@ -168,6 +169,7 @@ def main():
             dataset=dataset,
             lr=lr,
             device=device,
+            batch_size=batch_size,
         )
         dataset.update_graph_features(client_encoder, device)
         clients.append(client)

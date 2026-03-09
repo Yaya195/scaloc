@@ -38,6 +38,43 @@ SAMPLES_DIR = Path("data/processed/samples")
 RESULTS_DIR = Path("results/scalability")
 
 
+def _build_global_single_domain(
+    all_domains,
+    val_queries_all,
+    max_rps_global=None,
+    max_queries_global=None,
+    rp_sample_seed=42,
+    query_sample_seed=42,
+):
+    """Pool all domains into one global domain (single graph + single query set)."""
+    rp_tables = []
+    train_queries = []
+    val_queries = []
+
+    for domain_id in sorted(all_domains.keys()):
+        rp_table, queries = all_domains[domain_id]
+        rp_tables.append(rp_table)
+        train_queries.extend(list(queries))
+        val_queries.extend(list(val_queries_all.get(domain_id, [])))
+
+    if not rp_tables:
+        return {}, {}
+
+    rp_table_global = pd.concat(rp_tables, axis=0, ignore_index=True)
+
+    if max_rps_global and len(rp_table_global) > max_rps_global:
+        rp_table_global = rp_table_global.sample(n=max_rps_global, random_state=rp_sample_seed)
+
+    if max_queries_global and len(train_queries) > max_queries_global:
+        rng = np.random.RandomState(query_sample_seed)
+        idx = rng.choice(len(train_queries), size=max_queries_global, replace=False)
+        train_queries = [train_queries[i] for i in sorted(idx)]
+
+    domains_subset = {"global": (rp_table_global, train_queries)}
+    val_subset = {"global": val_queries}
+    return domains_subset, val_subset
+
+
 def build_experiment(
     domains_subset: dict,
     val_queries_all: dict,
@@ -60,6 +97,7 @@ def build_experiment(
     gnn_hidden_dim = model_cfg["gnn"]["hidden_dim"]
     gnn_layers = model_cfg["gnn"]["num_layers"]
     lr = train_cfg["training"]["learning_rate"]
+    batch_size = train_cfg["training"].get("batch_size", 128)
 
     encoder = APWiseEncoder(num_aps=num_aps, latent_dim=latent_dim,
                             ap_emb_dim=ap_emb_dim, pooling=pooling)
@@ -137,6 +175,7 @@ def build_experiment(
             dataset=dataset,
             lr=lr,
             device=device,
+            batch_size=batch_size,
         )
         dataset.update_graph_features(client_encoder, device)
         clients.append(client)
@@ -247,27 +286,40 @@ def vary_graph_size(
     rp_sample_seed,
     query_sample_seed,
 ):
-    """Experiment 2: vary max RPs per domain."""
+    """Experiment 2: one global graph, vary max total RPs."""
     results = []
+
     for max_rps in max_rps_grid:
         label = max_rps if max_rps else "all"
-        print(f"\n=== Max RPs per domain: {label} ===")
-        server, clients, val_ds = build_experiment(
+        print(f"\n=== [Global Graph] Max total RPs: {label} ===")
+
+        domains_subset, val_subset = _build_global_single_domain(
             all_domains,
             val_queries_all,
+            max_rps_global=max_rps,
+            max_queries_global=None,
+            rp_sample_seed=rp_sample_seed,
+            query_sample_seed=query_sample_seed,
+        )
+
+        server, clients, val_ds = build_experiment(
+            domains_subset,
+            val_subset,
             model_cfg,
             fl_cfg,
             train_cfg,
             device,
-            max_rps_per_domain=max_rps,
             seed=fl_cfg["federated"]["seed"],
             rp_sample_seed=rp_sample_seed,
             query_sample_seed=query_sample_seed,
         )
+
         r = run_one_experiment(
             f"scale_rps_{label}", server, clients, val_ds, fl_cfg, train_cfg, device
         )
-        r["max_rps"] = label
+        r["mode"] = "global_single_graph"
+        r["max_rps_global"] = label
+        r["num_domains_pooled"] = len(all_domains)
         results.append(r)
     return results
 
@@ -283,27 +335,40 @@ def vary_data_volume(
     rp_sample_seed,
     query_sample_seed,
 ):
-    """Experiment 3: vary samples per domain."""
+    """Experiment 3: one global graph, vary max total train queries."""
     results = []
+
     for max_q in max_queries_grid:
         label = max_q if max_q else "all"
-        print(f"\n=== Max queries per domain: {label} ===")
-        server, clients, val_ds = build_experiment(
+        print(f"\n=== [Global Graph] Max total train queries: {label} ===")
+
+        domains_subset, val_subset = _build_global_single_domain(
             all_domains,
             val_queries_all,
+            max_rps_global=None,
+            max_queries_global=max_q,
+            rp_sample_seed=rp_sample_seed,
+            query_sample_seed=query_sample_seed,
+        )
+
+        server, clients, val_ds = build_experiment(
+            domains_subset,
+            val_subset,
             model_cfg,
             fl_cfg,
             train_cfg,
             device,
-            max_queries_per_domain=max_q,
             seed=fl_cfg["federated"]["seed"],
             rp_sample_seed=rp_sample_seed,
             query_sample_seed=query_sample_seed,
         )
+
         r = run_one_experiment(
             f"scale_queries_{label}", server, clients, val_ds, fl_cfg, train_cfg, device
         )
-        r["max_queries"] = label
+        r["mode"] = "global_single_graph"
+        r["max_queries_global"] = label
+        r["num_domains_pooled"] = len(all_domains)
         results.append(r)
     return results
 
@@ -361,9 +426,15 @@ def main():
     scalability_cfg = fl_cfg.get("scalability", {})
 
     domain_counts = scalability_cfg["domain_counts"]
-    max_rps_grid = scalability_cfg["max_rps_per_domain"]
-    max_queries_grid = scalability_cfg["max_queries_per_domain"]
-    rounds_grid = scalability_cfg["rounds_grid"]
+    max_rps_grid = scalability_cfg.get(
+        "max_rps_global",
+        scalability_cfg.get("max_rps_per_domain", []),
+    )
+    max_queries_grid = scalability_cfg.get(
+        "max_queries_global",
+        scalability_cfg.get("max_queries_per_domain", []),
+    )
+    rounds_grid = scalability_cfg.get("rounds_grid", [])
     rp_sample_seed = scalability_cfg["rp_sample_seed"]
     query_sample_seed = scalability_cfg["query_sample_seed"]
     device = resolve_device(train_cfg["training"].get("device", "auto"))
@@ -375,7 +446,7 @@ def main():
 
     experiments = args.experiments
     if "all" in experiments:
-        experiments = ["domains", "rps", "queries", "rounds"]
+        experiments = ["domains", "rps", "queries"]
 
     all_results = {}
 
@@ -428,20 +499,23 @@ def main():
         )
 
     if "rounds" in experiments:
-        print("\n" + "=" * 60)
-        print("SCALABILITY: Convergence analysis (rounds)")
-        print("=" * 60)
-        all_results["rounds"] = vary_rounds(
-            all_domains,
-            val_queries_all,
-            model_cfg,
-            fl_cfg,
-            train_cfg,
-            device,
-            rounds_grid,
-            rp_sample_seed,
-            query_sample_seed,
-        )
+        if not rounds_grid:
+            print("\n[info] rounds experiment requested but scalability.rounds_grid is empty; skipping.")
+        else:
+            print("\n" + "=" * 60)
+            print("SCALABILITY: Convergence analysis (rounds)")
+            print("=" * 60)
+            all_results["rounds"] = vary_rounds(
+                all_domains,
+                val_queries_all,
+                model_cfg,
+                fl_cfg,
+                train_cfg,
+                device,
+                rounds_grid,
+                rp_sample_seed,
+                query_sample_seed,
+            )
 
     # Save summary
     summary_path = RESULTS_DIR / "scalability_summary.json"

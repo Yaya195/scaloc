@@ -11,7 +11,10 @@
 
 import torch
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.data.fl_query_dataset import FLQueryDataset
 
 from src.evaluation.metrics import compute_all_metrics
 
@@ -43,6 +46,40 @@ def _pack_rp_fingerprints(fingerprints, device: str):
         ap_ids.to(device, non_blocking=True),
         rssi.to(device, non_blocking=True),
         mask.to(device, non_blocking=True),
+    )
+
+
+def _pack_query_batch(dataset, batch_indices, device: str):
+    items = [dataset[i] for i in batch_indices]
+    batch_size = len(items)
+    max_len = max((len(ap_ids) for ap_ids, _rssi, _pos in items), default=0)
+
+    if batch_size == 0 or max_len == 0:
+        return (
+            torch.empty((0, 0), dtype=torch.long, device=device),
+            torch.empty((0, 0, 1), dtype=torch.float, device=device),
+            torch.empty((0, 0), dtype=torch.bool, device=device),
+            torch.empty((0, 2), dtype=torch.float, device=device),
+        )
+
+    ap_ids_batch = torch.zeros((batch_size, max_len), dtype=torch.long)
+    rssi_batch = torch.zeros((batch_size, max_len, 1), dtype=torch.float)
+    mask_batch = torch.zeros((batch_size, max_len), dtype=torch.bool)
+    pos_batch = torch.zeros((batch_size, 2), dtype=torch.float)
+
+    for row, (ap_ids, rssi, pos) in enumerate(items):
+        length = len(ap_ids)
+        if length > 0:
+            ap_ids_batch[row, :length] = ap_ids
+            rssi_batch[row, :length, :] = rssi
+            mask_batch[row, :length] = True
+        pos_batch[row] = pos
+
+    return (
+        ap_ids_batch.to(device, non_blocking=True),
+        rssi_batch.to(device, non_blocking=True),
+        mask_batch.to(device, non_blocking=True),
+        pos_batch.to(device, non_blocking=True),
     )
 
 
@@ -142,6 +179,7 @@ def evaluate_model_on_domain(
     model,
     dataset,
     device: str = "cpu",
+    batch_size: int = 128,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Evaluate model on all queries in a domain dataset.
@@ -178,44 +216,43 @@ def evaluate_model_on_domain(
     preds = []
     truths = []
     
-    for i in range(len(dataset)):
-        ap_ids, rssi, pos_norm = dataset[i]
-        ap_ids = ap_ids.to(device)
-        rssi = rssi.to(device)
-        
-        z_q = encoder(ap_ids, rssi)
-        if not torch.isfinite(z_q).all():
-            raise RuntimeError(
-                f"Non-finite query embedding during evaluation: domain={domain_id}, idx={i}, "
-                f"ap_count={len(ap_ids)}, rssi_min={float(rssi.min().item()) if rssi.numel() else 'na'}, "
-                f"rssi_max={float(rssi.max().item()) if rssi.numel() else 'na'}"
-            )
-        p_hat, _ = model(graph, z_q)
-        if not torch.isfinite(p_hat).all():
-            raise RuntimeError(
-                f"Non-finite normalized prediction during evaluation: domain={domain_id}, idx={i}, "
-                f"ap_count={len(ap_ids)}, pos_norm={pos_norm.detach().cpu().tolist()}"
-            )
-        
-        # Denormalize
-        p_hat_metric = denormalize_position(p_hat.cpu().numpy(), coord_min, coord_max)
-        p_true_metric = denormalize_position(pos_norm.numpy(), coord_min, coord_max)
+    indices = list(range(len(dataset)))
+    for start in range(0, len(indices), batch_size):
+        batch_indices = indices[start : start + batch_size]
+        ap_ids_b, rssi_b, mask_b, pos_norm_b = _pack_query_batch(dataset, batch_indices, device)
+        if ap_ids_b.numel() == 0:
+            continue
 
-        if not np.isfinite(p_hat_metric).all():
+        z_q_b = encoder.encode_packed(ap_ids_b, rssi_b, mask_b)
+        if not torch.isfinite(z_q_b).all():
             raise RuntimeError(
-                f"Non-finite denormalized prediction during evaluation: domain={domain_id}, idx={i}, "
-                f"p_hat_norm={p_hat.detach().cpu().tolist()}, coord_min={coord_min.tolist()}, "
-                f"coord_max={coord_max.tolist()}"
+                f"Non-finite query embedding batch during evaluation: domain={domain_id}, "
+                f"batch_start={start}, batch_size={len(batch_indices)}"
             )
-        if not np.isfinite(p_true_metric).all():
+
+        p_hat_b, _ = model(graph, z_q_b)
+        if not torch.isfinite(p_hat_b).all():
             raise RuntimeError(
-                f"Non-finite denormalized truth during evaluation: domain={domain_id}, idx={i}, "
-                f"pos_norm={pos_norm.detach().cpu().tolist()}, coord_min={coord_min.tolist()}, "
-                f"coord_max={coord_max.tolist()}"
+                f"Non-finite normalized prediction batch during evaluation: domain={domain_id}, "
+                f"batch_start={start}, batch_size={len(batch_indices)}"
             )
-        
-        preds.append(p_hat_metric)
-        truths.append(p_true_metric)
+
+        p_hat_metric_b = denormalize_position(p_hat_b.cpu().numpy(), coord_min, coord_max)
+        p_true_metric_b = denormalize_position(pos_norm_b.cpu().numpy(), coord_min, coord_max)
+
+        if not np.isfinite(p_hat_metric_b).all():
+            raise RuntimeError(
+                f"Non-finite denormalized prediction batch during evaluation: domain={domain_id}, "
+                f"batch_start={start}, coord_min={coord_min.tolist()}, coord_max={coord_max.tolist()}"
+            )
+        if not np.isfinite(p_true_metric_b).all():
+            raise RuntimeError(
+                f"Non-finite denormalized truth batch during evaluation: domain={domain_id}, "
+                f"batch_start={start}, coord_min={coord_min.tolist()}, coord_max={coord_max.tolist()}"
+            )
+
+        preds.extend(list(p_hat_metric_b))
+        truths.extend(list(p_true_metric_b))
     return np.stack(preds), np.stack(truths)
 
 

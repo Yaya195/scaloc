@@ -79,6 +79,7 @@ def run_architecture_suite(architectures, results_dir: Path, output_filename: st
     epochs = int(fl_cfg["federated"]["rounds"] * fl_cfg["federated"]["local_epochs"])
     eval_every = int(train_cfg["logging"].get("eval_every", 5))
     lr = float(train_cfg["training"]["learning_rate"])
+    batch_size = int(train_cfg["training"]["batch_size"])
 
     common_domains, selected_domains = select_fair_domains(fl_cfg)
 
@@ -106,6 +107,7 @@ def run_architecture_suite(architectures, results_dir: Path, output_filename: st
                 gnn_layers=model_cfg["gnn"]["num_layers"],
                 epochs=epochs,
                 lr=lr,
+                batch_size=batch_size,
                 eval_every=eval_every,
                 device=device,
                 allowed_domains=selected_domains,

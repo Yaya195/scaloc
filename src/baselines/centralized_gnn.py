@@ -41,9 +41,14 @@ def run_centralized_gnn(
     gnn_layers: int = None,
     epochs: int = None,
     lr: float = None,
+    batch_size: int = None,
     device: str = "auto",
     eval_every: int = None,
     allowed_domains=None,
+    max_rps_per_domain: int = None,
+    max_queries_per_domain: int = None,
+    rp_sample_seed: int = 42,
+    query_sample_seed: int = 42,
     experiment_name: str = "centralized_gnn",
 ) -> dict:
     """
@@ -81,6 +86,8 @@ def run_centralized_gnn(
         epochs = int(fl_cfg["federated"]["rounds"]) * int(fl_cfg["federated"]["local_epochs"])
     if lr is None:
         lr = float(train_cfg["training"]["learning_rate"])
+    if batch_size is None:
+        batch_size = int(train_cfg["training"]["batch_size"])
     if eval_every is None:
         eval_every = int(train_cfg["logging"]["eval_every"])
 
@@ -119,7 +126,16 @@ def run_centralized_gnn(
         if allowed_set is not None and domain_id not in allowed_set:
             continue
         rp_table = pd.read_parquet(rp_path)
+
+        if max_rps_per_domain and len(rp_table) > max_rps_per_domain:
+            rp_table = rp_table.sample(n=max_rps_per_domain, random_state=rp_sample_seed)
+
         queries = train_queries_all.get(domain_id, [])
+        if max_queries_per_domain and len(queries) > max_queries_per_domain:
+            rng = np.random.RandomState(query_sample_seed)
+            idx = rng.choice(len(queries), size=max_queries_per_domain, replace=False)
+            queries = [queries[i] for i in sorted(idx)]
+
         if not queries:
             continue
         graph = build_domain_graph(
@@ -176,49 +192,76 @@ def run_centralized_gnn(
         epoch_loss = 0.0
         n_batches = 0
 
-        for i in indices:
-            domain_id, q_idx = train_items[i]
-            ds = train_datasets[domain_id]
-            graph = ds.graph.to(device)
-
-            ap_ids, rssi, true_pos = ds[q_idx]
-            ap_ids = ap_ids.to(device)
-            rssi = rssi.to(device)
-            true_pos = true_pos.to(device)
-
+        for start in range(0, len(indices), batch_size):
+            batch_slice = indices[start : start + batch_size]
             optimizer.zero_grad()
+            batch_losses = []
+            grouped = {}
 
-            # Re-encode RP node features WITH gradients
-            rp_feats = []
-            for fp in graph.rp_fingerprints:
-                rp_ap = torch.tensor(fp["ap_ids"], dtype=torch.long, device=device)
-                rp_r = torch.tensor(fp["rssi"], dtype=torch.float, device=device).unsqueeze(-1)
-                rp_feats.append(encoder(rp_ap, rp_r))
+            for i in batch_slice:
+                domain_id, q_idx = train_items[i]
+                grouped.setdefault(domain_id, []).append(q_idx)
 
-            graph_live = graph.clone()
-            graph_live.x = torch.stack(rp_feats, dim=0)
+            for domain_id, q_indices in grouped.items():
+                ds = train_datasets[domain_id]
+                graph = ds.graph.to(device)
 
-            z_q = encoder(ap_ids, rssi)
+                # Re-encode RP node features WITH gradients
+                rp_feats = []
+                for fp in graph.rp_fingerprints:
+                    rp_ap = torch.tensor(fp["ap_ids"], dtype=torch.long, device=device)
+                    rp_r = torch.tensor(fp["rssi"], dtype=torch.float, device=device).unsqueeze(-1)
+                    rp_feats.append(encoder(rp_ap, rp_r))
 
-            if torch.isnan(z_q).any():
+                graph_live = graph.clone()
+                graph_live.x = torch.stack(rp_feats, dim=0)
+
+                query_items = [ds[q_idx] for q_idx in q_indices]
+                max_len = max((len(ap_ids) for ap_ids, _rssi, _pos in query_items), default=0)
+                if max_len == 0:
+                    continue
+
+                q_ap = torch.zeros((len(query_items), max_len), dtype=torch.long, device=device)
+                q_rssi = torch.zeros((len(query_items), max_len, 1), dtype=torch.float, device=device)
+                q_mask = torch.zeros((len(query_items), max_len), dtype=torch.bool, device=device)
+                q_pos = torch.zeros((len(query_items), 2), dtype=torch.float, device=device)
+
+                for row, (ap_ids, rssi, true_pos) in enumerate(query_items):
+                    ap_ids = ap_ids.to(device)
+                    rssi = rssi.to(device)
+                    true_pos = true_pos.to(device)
+                    length = len(ap_ids)
+                    if length > 0:
+                        q_ap[row, :length] = ap_ids
+                        q_rssi[row, :length, :] = rssi
+                        q_mask[row, :length] = True
+                    q_pos[row] = true_pos
+
+                z_q = encoder.encode_packed(q_ap, q_rssi, q_mask)
+                if torch.isnan(z_q).any():
+                    continue
+
+                p_hat, _ = model(graph_live, z_q)
+                if torch.isnan(p_hat).any():
+                    continue
+
+                loss = criterion(p_hat, q_pos)
+                if torch.isnan(loss):
+                    continue
+
+                batch_losses.append(loss)
+
+            if not batch_losses:
                 continue
 
-            p_hat, _ = model(graph_live, z_q)
-
-            if torch.isnan(p_hat).any():
-                continue
-
-            loss = criterion(p_hat, true_pos)
-            if torch.isnan(loss):
-                continue
-
-            loss.backward()
+            batch_loss = torch.stack(batch_losses).mean()
+            batch_loss.backward()
             torch.nn.utils.clip_grad_norm_(
                 list(model.parameters()) + list(encoder.parameters()), max_norm=1.0
             )
             optimizer.step()
 
-            epoch_loss += loss.item()
+            epoch_loss += float(batch_loss.item())
             n_batches += 1
 
         avg_loss = epoch_loss / max(n_batches, 1)
@@ -281,7 +324,7 @@ def _evaluate(model, encoder, val_datasets, device):
     )
 
 
-def _predict_domain(model, encoder, val_ds, device):
+def _predict_domain(model, encoder, val_ds, device, batch_size: int = 128):
     """Predict positions for all queries in a validation dataset.
     
     Returns positions in METRIC space (denormalized) for fair comparison
@@ -306,19 +349,37 @@ def _predict_domain(model, encoder, val_ds, device):
         graph_live = graph.clone()
         graph_live.x = torch.stack(rp_feats, dim=0)
 
-        for idx in range(len(val_ds)):
-            ap_ids, rssi, true_pos = val_ds[idx]
-            ap_ids = ap_ids.to(device)
-            rssi = rssi.to(device)
+        indices = list(range(len(val_ds)))
+        for start in range(0, len(indices), batch_size):
+            batch_indices = indices[start : start + batch_size]
+            query_items = [val_ds[idx] for idx in batch_indices]
+            max_len = max((len(ap_ids) for ap_ids, _rssi, _pos in query_items), default=0)
+            if max_len == 0:
+                continue
 
-            z_q = encoder(ap_ids, rssi)
+            q_ap = torch.zeros((len(query_items), max_len), dtype=torch.long, device=device)
+            q_rssi = torch.zeros((len(query_items), max_len, 1), dtype=torch.float, device=device)
+            q_mask = torch.zeros((len(query_items), max_len), dtype=torch.bool, device=device)
+            q_true = torch.zeros((len(query_items), 2), dtype=torch.float, device=device)
+
+            for row, (ap_ids, rssi, true_pos) in enumerate(query_items):
+                ap_ids = ap_ids.to(device)
+                rssi = rssi.to(device)
+                true_pos = true_pos.to(device)
+                length = len(ap_ids)
+                if length > 0:
+                    q_ap[row, :length] = ap_ids
+                    q_rssi[row, :length, :] = rssi
+                    q_mask[row, :length] = True
+                q_true[row] = true_pos
+
+            z_q = encoder.encode_packed(q_ap, q_rssi, q_mask)
             p_hat, _ = model(graph_live, z_q)
 
-            # Denormalize to metric space
             p_hat_metric = p_hat.cpu().numpy() * coord_range + coord_min
-            p_true_metric = true_pos.numpy() * coord_range + coord_min
+            p_true_metric = q_true.cpu().numpy() * coord_range + coord_min
 
-            preds.append(p_hat_metric)
-            truths.append(p_true_metric)
+            preds.extend(list(p_hat_metric))
+            truths.extend(list(p_true_metric))
 
     return np.stack(preds), np.stack(truths)

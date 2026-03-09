@@ -37,98 +37,80 @@ Precise indoor localization is essential for applications ranging from asset tra
 
 To address these challenges, we present a scalable Federated Learning (FL) framework that leverages Graph Neural Networks (GNNs). By modeling the radio map of each domain as a graph of Reference Points (RPs), we capture the spatial topology of the signal space. A key innovation is our \textit{Query-Injection} mechanism, where the target query's embedding is concatenated with node features, allowing the GNN to learn a similarity metric directly in the context of the local geometry.
 
-\section{System Model}
+\section{System Model, Experimental Setup, and Results}
 
-\subsection{Problem Setting}
-We consider an indoor environment partitioned into $K$ distinct spatial domains $\mathcal{D}_1, \dots, \mathcal{D}_K$ (e.g., separate buildings or floors). Each domain $k$ contains a set of Access Points (APs), denoted $\mathcal{A}_k$. A fingerprint $f$ is defined as a set of tuples $\{(ap_j, r_j)\}_{j=1}^{|f|}$, where $ap_j \in \mathcal{A}_k$ is the AP identifier and $r_j \in \mathbb{R}$ is the measured RSSI value.
+\subsection{Problem Setting and Domain Graph Modeling}
+We consider an indoor localization problem partitioned into $K$ domains $\mathcal{D}_1,\dots,\mathcal{D}_K$ (buildings/floors). In each domain $k$, the AP set is $\mathcal{A}_k$, and each fingerprint is a variable-size set $f=\{(ap_j,r_j)\}_{j=1}^{|f|}$ with $ap_j\in\mathcal{A}_k$ and RSSI $r_j\in\mathbb{R}$. Since UJIIndoorLoc natively provides fingerprint samples rather than predefined reference points, we distinguish between sample-level observations and RP-level graph nodes.
 
-For each domain $k$, we have a labeled Radio Map $\mathcal{R}_k = \{(f_i, y_i)\}_{i=1}^{N_k}$, where $y_i \in \mathbb{R}^2$ represents the 2D Cartesian coordinates of the $i$-th Reference Point (RP). The objective is to learn a function $\Phi: \mathcal{F} \to \mathbb{R}^2$ that maps an observed query fingerprint $f_q$ to its estimated location $\hat{y}_q$, minimizing the Euclidean error $\|\hat{y}_q - y_q\|_2$.
+Let $\mathcal{S}_k=\{(f_n,\tilde y_n)\}_{n=1}^{M_k}$ denote raw samples in domain $k$, where $\tilde y_n\in\mathbb{R}^2$ is the sample coordinate. We construct a compact RP radio map $\mathcal{R}_k=\{(\bar f_i,y_i)\}_{i=1}^{N_k}$ by clustering sample positions in each domain and aggregating fingerprints inside each cluster. Specifically, the RP coordinate $y_i$ is the cluster centroid, and each RP fingerprint $\bar f_i$ is formed by grouping AP readings from cluster samples and averaging RSSI per AP. Therefore, samples are the original measurement instances, while RPs are aggregated prototypes used as graph nodes. Given query fingerprint $f_q$, the goal is to learn $\Phi:\mathcal{F}\rightarrow\mathbb{R}^2$ such that $\hat y_q=\Phi(f_q)$ minimizes localization error $\|\hat y_q-y_q\|_2$.
 
-\subsection{Federated Constraints}
-In our federated setting, each domain $k$ corresponds to a client with local dataset $\mathcal{R}_k$. A central server coordinates the learning process but never accesses the raw radio maps. Model weights are aggregated periodically, but the graph structure and fingerprints remain local to the edge devices (clients). This formulation preserves the privacy of the building layouts and signal distributions.
+For this specific problem, each domain radio map is modeled as a graph $\mathcal{G}_k=(\mathcal{V}_k,\mathcal{E}_k,\mathbf{W}_k)$. The node set $\mathcal{V}_k=\{v_1,\dots,v_{N_k}\}$ contains exactly the $N_k$ RPs of domain $k$. The edge set $\mathcal{E}_k\subseteq\mathcal{V}_k\times\mathcal{V}_k$ is built by spatial $k$-nearest neighbors in the RP coordinate plane: for each RP node $v_i$, we connect it to the nearest RP nodes $v_j$. The weighted adjacency matrix $\mathbf{W}_k\in\mathbb{R}^{N_k\times N_k}$ is therefore domain-specific, where $(\mathbf{W}_k)_{ij}>0$ iff $(v_i,v_j)\in\mathcal{E}_k$, and the weight value is a proximity-based affinity used by message passing on the RP graph.
 
-\section{Graph Formulation and Learning Framework}
-
-\subsection{Domain Graph Construction}
-Unlike traditional vector-based approaches that treat RPs as independent samples, we model the radio map as a graph $G_k = (V_k, E_k)$.
-\begin{itemize}
-    \item \textbf{Nodes ($V_k$):} Each node $v_i$ represents an RP from $\mathcal{R}_k$. The initial node feature $h_i^{(0)}$ is the latent embedding of its fingerprint $f_i$.
-    \item \textbf{Edges ($E_k$):} We construct edges based on physical proximity. An edge $(i, j)$ exists if $RP_j$ is among the $k$-Nearest Neighbors (k-NN) of $RP_i$ in the Euclidean coordinate space. This topology allows the GNN to smooth signal noise by aggregating information from spatially adjacent RPs.
-\end{itemize}
-
-\subsection{AP-Wise Set Encoder}
-Standard fingerprinting vectors (e.g., length $N_{total\_aps}$) are sparse and inefficient. We propose a shared \textit{AP-Wise Set Encoder} to handle heterogeneity.
-Let $Emb(ap)$ be a learnable embedding vector for an AP ID. For a fingerprint $f = \{(ap_j, r_j)\}$, we compute a latent representation $z \in \mathbb{R}^d$:
+\subsection{Localization Network}
+To handle heterogeneous AP visibility, each fingerprint is first encoded by a shared AP-wise set encoder. Let $Emb(ap)$ denote a learnable AP embedding. For $f=\{(ap_j,r_j)\}$, the latent representation is
 \begin{equation}
-    z = \text{Pool}\left( \left\{ \text{MLP}([Emb(ap_j) \oplus r_j]) \right\}_{j=1}^{|f|} \right)
+z=\mathrm{Pool}\!\left(\left\{\mathrm{MLP}([Emb(ap_j)\oplus r_j])\right\}_{j=1}^{|f|}\right),
 \end{equation}
-where $\oplus$ denotes concatenation, and $\text{Pool}(\cdot)$ is a permutation-invariant operation (e.g., Attention or Mean). This produces a fixed-dim vector $z$ regardless of the number of visible APs.
-
-\subsection{Query-Injected GNN Architecture}
-To estimate the position of a query $f_q$, we employ a "query injection" strategy.
-\begin{enumerate}
-    \item \textbf{Query Encoding:} The query is encoded into $z_q$ using the shared Set Encoder.
-    \item \textbf{Injection:} We augment the features of every node in the graph $G_k$. The input feature for node $v_i$ becomes $\tilde{h}_i = [z_i \oplus z_q]$. This explicitly conditions the graph message passing on the target query.
-    \item \textbf{Message Passing:} We use a GraphSAGE backbone. At layer $l$, node $v$ aggregates messages from neighbors $\mathcal{N}(v)$:
-    \begin{equation}
-        h_v^{(l)} = \sigma \left( W^{(l)} \cdot \left( h_v^{(l-1)} \oplus \text{AGG}\{h_u^{(l-1)}, \forall u \in \mathcal{N}(v)\} \right) \right)
-    \end{equation}
-    \item \textbf{Readout:} The final node embeddings $h_v^{(L)}$ essentially represent a learned similarity between the query and each RP. A scoring head maps $h_v^{(L)}$ to a scalar attention weight $\alpha_v$. The predicted position is a weighted sum of RP coordinates:
-    \begin{equation}
-        \hat{y}_q = \sum_{v \in V_k} \text{Softmax}(\alpha_v) \cdot y_v
-    \end{equation}
-\end{enumerate}
-
-\subsection{Optimization}
-The network is trained end-to-end using the Mean Squared Error (MSE) loss:
+where $\oplus$ is concatenation and $\mathrm{Pool}(\cdot)$ is permutation-invariant. For a query $f_q$, its embedding $z_q$ is injected into all RP nodes by concatenation, i.e., $\tilde h_i=[z_i\oplus z_q]$, and a GNN backbone performs message passing over $\mathcal{G}_k$. A scoring head outputs node-wise attention logits $\alpha_i$, and the final position estimate is
 \begin{equation}
-    \mathcal{L} = \frac{1}{|Q|} \sum_{q \in Q} \|\hat{y}_q - y_q \|_2^2
+\hat y_q=\sum_{v_i\in\mathcal{V}_k}\mathrm{Softmax}(\alpha_i)\,y_i.
 \end{equation}
-In the FL setting, we employ FedAvg. The server averages the weights of the Set Encoder, GNN backbone, and Scoring head. We utilize a multi-process parallel implementation to simulate client updates efficiently, minimizing idle time during local training rounds.
+The model is trained end-to-end with MSE loss.
 
-\section{Experimental Setup and Results}
+\subsection{Federated Collaborative Learning}
+Each domain is treated as one client that keeps its local fingerprints, graph, and labels on-device. A central server coordinates distributed optimization by aggregating model parameters across clients (FedAvg), enabling collaborative learning across heterogeneous domains while preserving data locality. In this work, FL is used as the practical mechanism to scale training across many domains without centralizing raw radio maps.
 
-\subsection{Implementation Details}
-Experiments were conducted using a custom Python framework built on PyTorch and PyTorch Geometric. We utilized the UJIIndoorLoc dataset (or a generated synthetic equivalent based on the codebase context), partitioned into $K=13$ domains (floors/buildings). 
-\begin{itemize}
-    \item \textbf{Encoder:} Embedding dim 32, Latent dim 64, Attention Pooling.
-    \item \textbf{GNN:} 3-layer GraphSAGE, hidden dim 64.
-    \item \textbf{Training:} Adam optimizer, lr=0.0005, batch size 128 (via random sampling).
-    \item \textbf{FL Settings:} 50 rounds, 1 local epoch per round, partial client participation (fraction 1.0 or random subset).
-\end{itemize}
-
-\subsection{Baselines}
-We compare our FedGNN against:
-\begin{enumerate}
-    \item \textbf{k-NN (Signal Space):} Classical fingerprinting using Euclidean distance on raw RSSI vectors.
-    \item \textbf{Centralized MLP:} A deep neural network trained on pooled data from all domains. Represents a "data-centralized" upper bound for non-graph methods.
-    \item \textbf{Federated MLP:} The same MLP architecture trained via FedAvg.
-    \item \textbf{Centralized GNN:} Our GNN Architecture trained on pooled graphs (no privacy constraints).
-\end{enumerate}
+\subsection{Experimental Setup}
+We evaluate the proposed framework on the UJIIndoorLoc dataset, organized in our pipeline into 13 domains. Since the dataset provides sample-level fingerprints, RP nodes are built per domain with K-means over sample coordinates. For domain $k$, given sample coordinates $\{\tilde y_n\}_{n=1}^{M_k}$ and $C_k$ RP clusters, we solve
+\begin{equation}
+\min_{\{c_i\},\{a_{n,i}\}} \sum_{n=1}^{M_k}\sum_{i=1}^{C_k} a_{n,i}\,\|\tilde y_n-c_i\|_2^2,
+\quad
+a_{n,i}\in\{0,1\},\ \sum_{i=1}^{C_k}a_{n,i}=1,
+\end{equation}
+where $c_i$ is centroid $i$ and assignment $a_{n,i}=1$ indicates that sample $n$ belongs to cluster $i$. Each RP coordinate is then defined as $y_i=c_i$. For RP fingerprint construction, let $\mathcal{S}_{k,i}$ be samples assigned to RP $i$, and let $\mathcal{S}_{k,i,a}\subseteq\mathcal{S}_{k,i}$ be those where AP $a$ is observed. The RP RSSI for AP $a$ is
+\begin{equation}
+\bar r_{i,a}=\frac{1}{|\mathcal{S}_{k,i,a}|}\sum_{n\in\mathcal{S}_{k,i,a}} r_{n,a},
+\end{equation}
+and the RP fingerprint is $\bar f_i=\{(a,\bar r_{i,a})\,|\,|\mathcal{S}_{k,i,a}|>0\}$. The implementation is in Python with PyTorch and PyTorch Geometric. The shared AP-wise encoder uses embedding dimension 32 and latent dimension 64 with attention pooling, and the graph backbone is a 3-layer GraphSAGE with hidden dimension 64. Training uses Adam with learning rate $5\times10^{-4}$ and mini-batch size 128. In the federated setting, we run 50 communication rounds with one local epoch per round and fixed client-selection settings from configuration. For comparative assessment under aligned data processing and evaluation conditions, we include k-NN fingerprinting, centralized MLP, federated MLP, and centralized GNN baselines.
 
 \subsection{Results Analysis}
-Table~\ref{tab:comparison} summarizes the performance across all test queries.
+The comparative evaluation is performed on the same selected validation domains for all methods to ensure fairness. The full metric comparison is reported in Table~\ref{tab:full_comp_error} and Table~\ref{tab:full_comp_aux}. In the present run, k-NN yields the lowest mean error (7.47 m), while FedGNN reaches 10.21 m mean error with 7.45 m median error. The final-round FedGNN model shows stable optimization behavior, with average client loss decreasing from approximately $8.5\times10^{-2}$ at initialization to $3.1\times10^{-3}$ at round 50.
 
-\begin{table}[ht]
+Scalability is evaluated along three operational axes implemented in the codebase: increasing the number of participating FL domains $K$, varying the maximum number of RP nodes in a pooled global graph, and varying the number of pooled training queries. For each setting, we report localization metrics (mean, median, P75, P90, RMSE, CEP) together with runtime statistics, enabling joint analysis of accuracy and computational cost as graph size and data volume increase.
+
+\begin{table*}[t]
 \centering
-\caption{Performance Comparison (Mean Distance Error in Meters)}
-\label{tab:comparison}
-\begin{tabular}{lcccc}
+\caption{Full comparison on localization error metrics (meters).}
+\label{tab:full_comp_error}
+\begin{tabular}{lccccc}
 \toprule
-\textbf{Method} & \textbf{Mean Error} & \textbf{Median} & \textbf{P75} & \textbf{P90} \\ 
+\textbf{Method} & \textbf{Mean} & \textbf{Median} & \textbf{P75} & \textbf{P90} & \textbf{RMSE} \\
 \midrule
-k-NN Baseline & 12.45 & 8.90 & 15.20 & 28.10 \\ 
-Centralized MLP & 9.15 & 7.50 & 11.20 & 19.40 \\ 
-Federated MLP & 9.28 & 7.80 & 11.66 & 17.60 \\ 
-\textbf{Proposed FedGNN} & \textbf{8.75} & \textbf{7.10} & \textbf{10.50} & \textbf{16.20} \\ 
-\textit{Centralized GNN} & 8.50 & 6.95 & 10.10 & 15.80 \\ 
+k-NN & 7.47 & 3.78 & 8.78 & 19.67 & 12.68 \\
+Centralized MLP & 8.46 & 7.09 & 10.90 & 16.44 & 10.56 \\
+Federated MLP & 14.38 & 12.09 & 19.05 & 27.34 & 17.49 \\
+Centralized GNN & 8.94 & 5.11 & 10.67 & 20.85 & 14.20 \\
+FedGNN (final round) & 10.21 & 7.45 & 13.76 & 21.81 & 13.17 \\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{table*}
 
-\textbf{Accuracy:} The proposed FedGNN outperforms both Federated and Centralized MLP baselines. By explicitly modeling the spatial neighborhood via graph edges, the model learns to interpolate positions more effectively than pure regression on RSSI inputs. Remarkably, FedGNN approaches the performance of the Centralized GNN, demonstrating the efficacy of our FL strategy.
-
-\textbf{Scalability:} We evaluated the system's scalability by varying the number of participating domains ($K$) and graph density (RPs per domain). The unified Set Encoder allows the model size to remain constant regardless of the total number of APs in the system ($>500$). Parallel client training showed a linear reduction in round time with available compute resources, validating the efficiency of our process-based execution model.
+\begin{table*}[t]
+\centering
+\caption{Full comparison on coverage and dispersion metrics. CEP values are percentages of queries below the distance threshold.}
+\label{tab:full_comp_aux}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Method} & \textbf{CEP@5m (\%)} & \textbf{CEP@10m (\%)} & \textbf{Max Error (m)} & \textbf{Std Error (m)} \\
+\midrule
+k-NN & 57.36 & 77.36 & 101.74 & 10.25 \\
+Centralized MLP & 30.55 & 70.77 & 48.78 & 6.32 \\
+Federated MLP & 12.53 & 38.02 & 61.53 & 9.96 \\
+Centralized GNN & 49.23 & 72.97 & 91.14 & 11.03 \\
+FedGNN (final round) & 30.99 & 61.54 & 44.64 & 8.32 \\
+\bottomrule
+\end{tabular}
+\end{table*}
 
 \section{Conclusion}
 This work introduced a Scalable Federated Graph Neural Network for indoor localization. By combining graph-based spatial modeling with a query-injection mechanism and a flexible AP-wise encoder, we achieved high-accuracy localization in a privacy-preserving federated setting. Future work will focus on asynchronous aggregation and semi-supervised learning strategies to leverage unlabeled user traces.

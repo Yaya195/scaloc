@@ -9,12 +9,13 @@ class FLClient:
     One FL client = one domain.
     """
 
-    def __init__(self, client_id, model, encoder, dataset, lr=1e-3, device="cpu"):
+    def __init__(self, client_id, model, encoder, dataset, lr=1e-3, device="cpu", batch_size=1):
         self.client_id = client_id
         self.model = model.to(device)
         self.encoder = encoder.to(device)
         self.dataset = dataset
         self.device = device
+        self.batch_size = max(1, int(batch_size))
         self._cached_rp_device = None
         self._cached_rp_ap_ids = None
         self._cached_rp_rssi = None
@@ -70,10 +71,45 @@ class FLClient:
         self._cached_rp_mask = mask.to(self.device, non_blocking=True)
         self._cached_rp_device = self.device
 
-    def train_one_epoch(self, batch_size=1):
+    def _pack_query_batch(self, batch_indices):
+        batch_items = [self.dataset[idx] for idx in batch_indices]
+        batch_size = len(batch_items)
+        max_len = max((len(ap_ids) for ap_ids, _rssi, _pos in batch_items), default=0)
+
+        if batch_size == 0 or max_len == 0:
+            return (
+                torch.empty((0, 0), dtype=torch.long, device=self.device),
+                torch.empty((0, 0, 1), dtype=torch.float, device=self.device),
+                torch.empty((0, 0), dtype=torch.bool, device=self.device),
+                torch.empty((0, 2), dtype=torch.float, device=self.device),
+            )
+
+        ap_ids_batch = torch.zeros((batch_size, max_len), dtype=torch.long)
+        rssi_batch = torch.zeros((batch_size, max_len, 1), dtype=torch.float)
+        mask_batch = torch.zeros((batch_size, max_len), dtype=torch.bool)
+        pos_batch = torch.zeros((batch_size, 2), dtype=torch.float)
+
+        for row, (ap_ids, rssi, pos) in enumerate(batch_items):
+            length = len(ap_ids)
+            if length > 0:
+                ap_ids_batch[row, :length] = ap_ids
+                rssi_batch[row, :length, :] = rssi
+                mask_batch[row, :length] = True
+            pos_batch[row] = pos
+
+        return (
+            ap_ids_batch.to(self.device, non_blocking=True),
+            rssi_batch.to(self.device, non_blocking=True),
+            mask_batch.to(self.device, non_blocking=True),
+            pos_batch.to(self.device, non_blocking=True),
+        )
+
+    def train_one_epoch(self, batch_size=None):
         self.model.train()
         self.encoder.train()
         self._ensure_packed_rp_tensors()
+
+        effective_batch_size = self.batch_size if batch_size is None else max(1, int(batch_size))
 
         graph = self.dataset.graph.to(self.device)
 
@@ -81,11 +117,11 @@ class FLClient:
         num_batches = 0
 
         indices = torch.randperm(len(self.dataset)).tolist()
-        for index in indices:
-            ap_ids, rssi, true_pos = self.dataset[index]
-            ap_ids = ap_ids.to(self.device, non_blocking=True)
-            rssi = rssi.to(self.device, non_blocking=True)
-            true_pos = true_pos.to(self.device, non_blocking=True)
+        for start in range(0, len(indices), effective_batch_size):
+            batch_indices = indices[start : start + effective_batch_size]
+            ap_ids_batch, rssi_batch, mask_batch, true_pos_batch = self._pack_query_batch(batch_indices)
+            if ap_ids_batch.numel() == 0:
+                continue
 
             self.optimizer.zero_grad(set_to_none=True)
 
@@ -97,23 +133,21 @@ class FLClient:
 
             graph.x = rp_feats
 
-            z_q = self.encoder(ap_ids, rssi)
-            if not torch.isfinite(z_q).all():
+            z_q_batch = self.encoder.encode_packed(ap_ids_batch, rssi_batch, mask_batch)
+            if not torch.isfinite(z_q_batch).all():
                 print(f"  WARNING: Non-finite encoder output for client {self.client_id}")
-                print(f"    AP count: {len(ap_ids)}")
+                print(f"    Batch size: {z_q_batch.size(0)}")
                 continue
 
-            p_hat, _ = self.model(graph, z_q)
-
-            if not torch.isfinite(p_hat).all():
+            p_hat_batch, _ = self.model(graph, z_q_batch)
+            if not torch.isfinite(p_hat_batch).all():
                 print(f"  WARNING: Non-finite model output for client {self.client_id}")
                 continue
 
-            loss = self.criterion(p_hat, true_pos)
+            loss = self.criterion(p_hat_batch, true_pos_batch)
 
             if not torch.isfinite(loss):
                 print(f"  WARNING: Non-finite loss for client {self.client_id}")
-                print(f"    p_hat: {p_hat}, true_pos: {true_pos}")
                 continue
 
             loss.backward()
